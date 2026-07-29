@@ -6,6 +6,7 @@ with your existing tennis tables in the same Render Postgres database.
 
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, JSON
 from sqlalchemy.orm import sessionmaker, declarative_base
+from datetime import datetime
 from config import Config
 
 Base = declarative_base()
@@ -55,6 +56,31 @@ class TeamStrengthCache(Base):
     wins = Column(Integer)
     losses = Column(Integer)
     updated_at = Column(DateTime, nullable=False)
+
+
+class PaperTradingAccount(Base):
+    """Tracks fake-money balance for paper trading."""
+    __tablename__ = "bball_paper_trading_account"
+
+    id = Column(Integer, primary_key=True)
+    current_balance = Column(Float, nullable=False)
+    starting_balance = Column(Float, nullable=False)
+    total_bets_placed = Column(Integer, default=0)
+    total_wins = Column(Integer, default=0)
+    total_losses = Column(Integer, default=0)
+    updated_at = Column(DateTime, nullable=False)
+
+
+def get_or_create_paper_account(session, starting_balance: float):
+    account = session.query(PaperTradingAccount).first()
+    if account is None:
+        account = PaperTradingAccount(
+            current_balance=starting_balance, starting_balance=starting_balance,
+            updated_at=datetime.utcnow(),
+        )
+        session.add(account)
+        session.commit()
+    return account
 
 
 # --- Engine & Session setup ---
