@@ -1,0 +1,9 @@
+Flask==3.0.3
+SQLAlchemy==2.0.31
+psycopg[binary]==3.2.3
+requests==2.32.3
+APScheduler==3.10.4
+numpy==1.26.4
+scipy==1.13.1
+python-dotenv==1.0.1
+gunicorn==22.0.0
