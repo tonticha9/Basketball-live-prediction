@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="sw">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🏀 Live Basketball Prediction Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', sans-serif;
+    background: linear-gradient(-45deg, #0f0c29, #302b63, #24243e, #1a1a2e);
+    background-size: 400% 400%;
+    animation: gradientShift 15s ease infinite;
+    color: #f0f0f0;
+    min-height: 100vh;
+    padding: 20px;
+  }
+
+  @keyframes gradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+
+  header {
+    text-align: center;
+    padding: 20px 0;
+  }
+
+  header h1 {
+    font-size: 28px;
+    background: linear-gradient(90deg, #ff6b6b, #f7b733, #4ecdc4, #556fb5);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: textGlow 6s ease infinite;
+  }
+
+  @keyframes textGlow {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+
+  .stats-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin: 24px 0;
+  }
+
+  .stat-card {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 16px;
+    padding: 18px 24px;
+    min-width: 140px;
+    text-align: center;
+    backdrop-filter: blur(10px);
+    transition: transform 0.3s ease;
+    animation: floatUp 0.6s ease-out;
+  }
+
+  .stat-card:hover {
+    transform: translateY(-4px);
+  }
+
+  @keyframes floatUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .stat-card .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #a0a0c0;
+    margin-bottom: 6px;
+  }
+
+  .stat-card .value {
+    font-size: 24px;
+    font-weight: bold;
+  }
+
+  .balance { color: #4ecdc4; }
+  .winrate { color: #f7b733; }
+  .roi-positive { color: #6bff8f; }
+  .roi-negative { color: #ff6b6b; }
+
+  .alerts-section {
+    max-width: 700px;
+    margin: 30px auto 0;
+  }
+
+  .alert-card {
+    background: rgba(255,255,255,0.05);
+    border-left: 4px solid #4ecdc4;
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 12px;
+    animation: slideIn 0.4s ease-out;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .alert-card::before {
+    content: "";
+    position: absolute;
+    top: 0; left: -100%;
+    width: 100%; height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(78,205,196,0.15), transparent);
+    animation: shimmer 3s infinite;
+  }
+
+  @keyframes shimmer {
+    0% { left: -100%; }
+    100% { left: 100%; }
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .alert-card .market {
+    font-weight: bold;
+    color: #f7b733;
+    font-size: 15px;
+  }
+
+  .alert-card .details {
+    font-size: 13px;
+    color: #c0c0e0;
+    margin-top: 6px;
+    line-height: 1.6;
+  }
+
+  .edge-badge {
+    display: inline-block;
+    background: linear-gradient(90deg, #ff6b6b, #f7b733);
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: bold;
+    color: #1a1a2e;
+  }
+
+  .settle-buttons button {
+    margin-top: 10px;
+    margin-right: 8px;
+    padding: 6px 14px;
+    border: none;
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+
+  .btn-won { background: #6bff8f; color: #1a1a2e; }
+  .btn-lost { background: #ff6b6b; color: #1a1a2e; }
+  .settle-buttons button:hover { opacity: 0.8; }
+
+  .settled-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 8px;
+    margin-top: 8px;
+    display: inline-block;
+  }
+
+  .tag-won { background: rgba(107,255,143,0.2); color: #6bff8f; }
+  .tag-lost { background: rgba(255,107,107,0.2); color: #ff6b6b; }
+
+  .no-alerts {
+    text-align: center;
+    color: #808090;
+    padding: 40px;
+    font-style: italic;
+  }
+
+  .pulse-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    background: #6bff8f;
+    border-radius: 50%;
+    margin-right: 6px;
+    animation: pulse 1.5s infinite;
+  }
+
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(107,255,143,0.7); }
+    70% { box-shadow: 0 0 0 8px rgba(107,255,143,0); }
+    100% { box-shadow: 0 0 0 0 rgba(107,255,143,0); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🏀 LIVE PREDICTION ENGINE</h1>
+  <p style="color:#a0a0c0; font-size:13px; margin-top:4px;">
+    <span class="pulse-dot"></span>Paper Trading Mode — Fake Money Only
+  </p>
+</header>
+
+<div class="stats-row" id="statsRow">
+  <div class="stat-card">
+    <div class="label">Balance</div>
+    <div class="value balance" id="balanceVal">${{ account.current_balance }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Total Bets</div>
+    <div class="value" id="totalBetsVal">{{ account.total_bets_placed }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Win Rate</div>
+    <div class="value winrate" id="winRateVal">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">ROI</div>
+    <div class="value" id="roiVal">-</div>
+  </div>
+</div>
+
+<div class="alerts-section" id="alertsSection">
+  {% if alerts %}
+    {% for alert in alerts %}
+    <div class="alert-card" data-id="{{ alert.id }}">
+      <div class="market">{{ alert.market }} {% if alert.side %}— {{ alert.side }}{% endif %}</div>
+      <div class="details">
+        Match: {{ alert.match_id }} | Odds: {{ alert.offered_odds }} | Prob: {{ (alert.blended_probability * 100) | round(1) }}%
+        <br>Stake: ${{ alert.recommended_stake }} | <span class="edge-badge">+{{ alert.edge_pct }}% edge</span>
+        <br><small>{{ alert.fired_at.strftime('%Y-%m-%d %H:%M') }}</small>
+      </div>
+      {% if alert.settled_result is none %}
+      <div class="settle-buttons">
+        <button class="btn-won" onclick="settleBet({{ alert.id }}, true)">✓ Won</button>
+        <button class="btn-lost" onclick="settleBet({{ alert.id }}, false)">✗ Lost</button>
+      </div>
+      {% else %}
+        <span class="settled-tag {{ 'tag-won' if alert.settled_result else 'tag-lost' }}">
+          {{ 'WON' if alert.settled_result else 'LOST' }} — P/L: ${{ alert.profit_loss }}
+        </span>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="no-alerts">Hakuna alerts bado — subiri mchezo uwe live...</div>
+  {% endif %}
+</div>
+
+<script>
+async function settleBet(alertId, won) {
+  const res = await fetch(`/api/settle_bet/${alertId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ won })
+  });
+  if (res.ok) {
+    location.reload();
+  }
+}
+
+async function refreshStats() {
+  const res = await fetch('/api/account_summary');
+  const data = await res.json();
+  document.getElementById('balanceVal').textContent = `$${data.current_balance}`;
+  document.getElementById('totalBetsVal').textContent = data.total_bets;
+  document.getElementById('winRateVal').textContent = `${data.win_rate}%`;
+  const roiEl = document.getElementById('roiVal');
+  roiEl.textContent = `${data.roi_pct}%`;
+  roiEl.className = 'value ' + (data.roi_pct >= 0 ? 'roi-positive' : 'roi-negative');
+}
+
+refreshStats();
+setInterval(refreshStats, 15000); // refresh every 15s
+</script>
+
+</body>
+</html>
