@@ -59,7 +59,6 @@ class TeamStrengthCache(Base):
 
 
 class PaperTradingAccount(Base):
-    """Tracks fake-money balance for paper trading."""
     __tablename__ = "bball_paper_trading_account"
 
     id = Column(Integer, primary_key=True)
@@ -69,6 +68,41 @@ class PaperTradingAccount(Base):
     total_wins = Column(Integer, default=0)
     total_losses = Column(Integer, default=0)
     updated_at = Column(DateTime, nullable=False)
+
+
+class User(Base):
+    __tablename__ = "bball_users"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, nullable=False)
+    first_seen = Column(DateTime, nullable=False)
+    last_seen = Column(DateTime, nullable=False)
+
+
+class APIKeySettings(Base):
+    __tablename__ = "bball_api_key_settings"
+
+    id = Column(Integer, primary_key=True)
+    provider_name = Column(String, nullable=False, default="AllSportsAPI")
+    api_key = Column(String, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True)
+    updated_at = Column(DateTime, nullable=False)
+
+
+class LiveMatchStatus(Base):
+    __tablename__ = "bball_live_match_status"
+
+    id = Column(Integer, primary_key=True)
+    match_id = Column(String, unique=True, index=True, nullable=False)
+    home_team = Column(String)
+    away_team = Column(String)
+    league_name = Column(String)
+    quarters_completed = Column(Integer)
+    current_total = Column(Integer)
+    score_diff = Column(Integer)
+    has_active_alert = Column(Boolean, default=False)
+    last_updated = Column(DateTime, nullable=False)
 
 
 def get_or_create_paper_account(session, starting_balance: float):
@@ -81,6 +115,29 @@ def get_or_create_paper_account(session, starting_balance: float):
         session.add(account)
         session.commit()
     return account
+
+
+def get_or_create_api_key_settings(session):
+    settings = session.query(APIKeySettings).first()
+    if settings is None:
+        settings = APIKeySettings(
+            provider_name="AllSportsAPI", api_key=None,
+            expires_at=None, is_active=False, updated_at=datetime.utcnow(),
+        )
+        session.add(settings)
+        session.commit()
+    return settings
+
+
+def register_user_visit(session, username: str):
+    user = session.query(User).filter_by(username=username).first()
+    if user is None:
+        user = User(username=username, first_seen=datetime.utcnow(), last_seen=datetime.utcnow())
+        session.add(user)
+    else:
+        user.last_seen = datetime.utcnow()
+    session.commit()
+    return user
 
 
 # --- Engine & Session setup ---
