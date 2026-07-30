@@ -71,7 +71,7 @@ class AllSportsLivescoreParser:
 
         q_completed_count = len(completed_quarters)
         raw_status = str(event.get("event_status", ""))
-        minutes_elapsed_current_q = 6.0  # conservative midpoint default
+        minutes_elapsed_current_q = 6.0
         if ":" in raw_status:
             try:
                 mins, secs = raw_status.split(":")
@@ -95,7 +95,6 @@ class AllSportsLivescoreParser:
     @staticmethod
     def sync_orchestrator_quarters(live_only_model, completed_quarters: List[Dict],
                                     already_ingested_count: int) -> int:
-        """Feeds newly-completed quarters into a LiveOnlyGameTotalModel instance."""
         new_quarters = completed_quarters[already_ingested_count:]
         for q in new_quarters:
             live_only_model.ingest_quarter(home_pts=q["home"], away_pts=q["away"])
@@ -160,7 +159,6 @@ class AllSportsOddsParser:
 class AllSportsPlayerStatsParser:
     @staticmethod
     def get_all_players_live_stats(event: Dict) -> List[Dict]:
-        """Returns live stats for ALL players in both teams at once."""
         results = []
         for team_side in ["home_team", "away_team"]:
             players = event.get("player_statistics", {}).get(team_side, [])
@@ -188,8 +186,6 @@ class AllSportsPlayerOddsParser:
     @staticmethod
     def get_all_milestones_for_player(odds_response: Dict, match_id: str,
                                        player_name: str) -> List[Dict]:
-        """Returns list of {'threshold': float, 'over_decimal': float} for
-        every threshold offered for this player."""
         match_odds = odds_response.get("result", {}).get(str(match_id), {})
         milestones = match_odds.get("Player Points Milestones", {})
         market_key = f"Player Points Milestones {player_name}"
