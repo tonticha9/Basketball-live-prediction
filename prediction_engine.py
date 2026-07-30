@@ -1,8 +1,7 @@
 """
 prediction_engine.py
 All mathematical models: de-vig, scoring models, win probability,
-ensemble blending, Kelly staking, CLV tracking. Consolidated from
-Kaggle testing into production-ready module.
+ensemble blending, Kelly staking, CLV tracking, and market orchestrators.
 """
 
 import numpy as np
@@ -57,7 +56,7 @@ class ShinDevig:
 
 
 # =========================================================
-# QUARTER / PLAYER SCORING HELPERS
+# SHARED NEGBINOM HELPER
 # =========================================================
 class QuarterScoringModel:
     @staticmethod
@@ -179,7 +178,7 @@ class LiveWinProbabilityModel:
 
 
 # =========================================================
-# PLAYER SCORING MODEL (fixed: continuous shrinkage + rate cap)
+# PLAYER SCORING MODEL (continuous shrinkage + rate cap)
 # =========================================================
 class PlayerScoringModel:
     NEUTRAL_PTS_PER_MIN = 0.45
@@ -311,7 +310,7 @@ def sanity_check_disagreement(model_prob: float, market_prob: float,
 
 
 # =========================================================
-# ORCHESTRATORS
+# ORCHESTRATOR: FULL-GAME HOME/AWAY
 # =========================================================
 class HomeAwayOrchestrator:
     def __init__(self, bankroll: float, ev_alert_threshold: float = 0.03,
@@ -371,6 +370,9 @@ class HomeAwayOrchestrator:
         }
 
 
+# =========================================================
+# ORCHESTRATOR: QUARTER HOME/AWAY
+# =========================================================
 class QuarterHomeAwayOrchestrator:
     def __init__(self, bankroll: float, ev_alert_threshold: float = 0.03,
                  max_model_market_disagreement: float = 0.30,
@@ -433,6 +435,9 @@ class QuarterHomeAwayOrchestrator:
         }
 
 
+# =========================================================
+# ORCHESTRATOR: PLAYER PROPS
+# =========================================================
 class PlayerPropsOrchestrator:
     MAX_PLAUSIBLE_EDGE = 0.25
 
@@ -482,4 +487,162 @@ class PlayerPropsOrchestrator:
             "edge_pct": round(edge * 100, 2), "expected_final_points": result["expected_final_points"],
             "recommended_stake": stake_info["recommended_stake"],
             "alert": "🔥 PLAYER PROP VALUE DETECTED",
+        }
+
+
+# =========================================================
+# ORCHESTRATOR: ODD/EVEN TOTAL
+# =========================================================
+class OddEvenOrchestrator:
+    def __init__(self, bankroll: float, ev_alert_threshold: float = 0.04):
+        self.bankroll = bankroll
+        self.ev_alert_threshold = ev_alert_threshold
+        self.kelly = KellyStaking()
+
+    def evaluate(self, live_total_model: LiveOnlyGameTotalModel, current_total: int,
+                 quarters_completed: int, minutes_elapsed_current_q: float,
+                 odds: Dict) -> Optional[Dict]:
+        per_minute_rate = live_total_model.pace_model.current_pace_per_minute()
+        confidence = live_total_model.pace_model.pace_confidence()
+        minutes_played_total = quarters_completed * 12.0 + minutes_elapsed_current_q
+        minutes_remaining = max(48.0 - minutes_played_total, 0.0)
+        expected_remaining = max(per_minute_rate * minutes_remaining, 0.5)
+        adjusted_dispersion = max(live_total_model.dispersion * confidence, 1.0)
+        r, p = QuarterScoringModel._nbinom_params(expected_remaining, adjusted_dispersion)
+        dist = nbinom(r, p)
+
+        max_k = int(dist.mean() + 6 * dist.std()) + 1
+        p_odd, p_even = 0.0, 0.0
+        for k in range(0, max_k + 1):
+            p_k = dist.pmf(k)
+            if (current_total + k) % 2 == 0:
+                p_even += p_k
+            else:
+                p_odd += p_k
+        total_p = p_odd + p_even
+        if total_p <= 0:
+            return None
+        p_odd, p_even = p_odd / total_p, p_even / total_p
+
+        fair_probs = ShinDevig.devig([odds["odd_decimal"], odds["even_decimal"]])
+        blended_p_odd = 0.5 * p_odd + 0.5 * fair_probs[0]
+        blended_p_even = 1 - blended_p_odd
+
+        odd_edge = blended_p_odd - (1 / odds["odd_decimal"])
+        even_edge = blended_p_even - (1 / odds["even_decimal"])
+
+        side, edge, side_odds, prob = None, 0.0, 0.0, 0.0
+        if odd_edge > self.ev_alert_threshold and odd_edge > even_edge:
+            side, edge, side_odds, prob = "Odd", odd_edge, odds["odd_decimal"], blended_p_odd
+        elif even_edge > self.ev_alert_threshold:
+            side, edge, side_odds, prob = "Even", even_edge, odds["even_decimal"], blended_p_even
+
+        if side is None:
+            return None
+        stake_info = self.kelly.calculate_stake(prob, side_odds, self.bankroll)
+        if stake_info["recommended_stake"] <= 0:
+            return None
+        return {
+            "market": "Odd/Even Total", "side": side, "blended_probability": round(prob, 4),
+            "offered_odds": side_odds, "edge_pct": round(edge * 100, 2),
+            "recommended_stake": stake_info["recommended_stake"], "alert": "🔥 VALUE BET DETECTED",
+        }
+
+
+# =========================================================
+# ORCHESTRATOR: HIGHEST SCORING QUARTER
+# =========================================================
+class HighestScoringQuarterOrchestrator:
+    NEUTRAL_QUARTER_PRIORS = {1: 0.23, 2: 0.26, 3: 0.24, 4: 0.27}
+
+    def __init__(self, bankroll: float, ev_alert_threshold: float = 0.05):
+        self.bankroll = bankroll
+        self.ev_alert_threshold = ev_alert_threshold
+        self.kelly = KellyStaking()
+
+    def evaluate(self, completed_quarter_totals: Dict[int, int],
+                 odds_by_quarter: Dict[int, float]) -> Optional[Dict]:
+        remaining = [q for q in [1, 2, 3, 4] if q not in completed_quarter_totals]
+        if not remaining:
+            return None
+
+        current_leader = max(completed_quarter_totals, key=completed_quarter_totals.get) \
+            if completed_quarter_totals else None
+
+        remaining_mass = sum(self.NEUTRAL_QUARTER_PRIORS[q] for q in remaining)
+        model_probs = {q: self.NEUTRAL_QUARTER_PRIORS[q] / remaining_mass for q in remaining}
+        if current_leader is not None:
+            model_probs[current_leader] = model_probs.get(current_leader, 0.0) + 0.05
+        total_p = sum(model_probs.values())
+        model_probs = {q: p / total_p for q, p in model_probs.items()}
+
+        best_q, best_edge, best_odds, best_prob = None, 0.0, 0.0, 0.0
+        for q, dec_odds in odds_by_quarter.items():
+            if q not in model_probs:
+                continue
+            edge = model_probs[q] - (1 / dec_odds)
+            if edge > self.ev_alert_threshold and edge > best_edge:
+                best_q, best_edge, best_odds, best_prob = q, edge, dec_odds, model_probs[q]
+
+        if best_q is None:
+            return None
+        stake_info = self.kelly.calculate_stake(best_prob, best_odds, self.bankroll)
+        if stake_info["recommended_stake"] <= 0:
+            return None
+        return {
+            "market": "Highest Scoring Quarter", "side": f"Q{best_q}",
+            "blended_probability": round(best_prob, 4), "offered_odds": best_odds,
+            "edge_pct": round(best_edge * 100, 2),
+            "recommended_stake": stake_info["recommended_stake"], "alert": "🔥 VALUE BET DETECTED",
+        }
+
+
+# =========================================================
+# CLV TRACKER
+# =========================================================
+@dataclass
+class BetRecord:
+    match_id: str
+    market: str
+    placed_odds: float
+    placed_timestamp: datetime
+    fair_prob_at_placement: float
+    closing_odds: Optional[float] = None
+    closing_timestamp: Optional[datetime] = None
+    settled_result: Optional[bool] = None
+
+
+class CLVTracker:
+    def __init__(self):
+        self.bets: List[BetRecord] = []
+
+    def record_bet(self, match_id: str, market: str, placed_odds: float,
+                    fair_prob_at_placement: float):
+        self.bets.append(BetRecord(
+            match_id=match_id, market=market, placed_odds=placed_odds,
+            placed_timestamp=datetime.utcnow(), fair_prob_at_placement=fair_prob_at_placement,
+        ))
+
+    def record_closing_line(self, match_id: str, market: str, closing_odds: float):
+        for bet in self.bets:
+            if bet.match_id == match_id and bet.market == market and bet.closing_odds is None:
+                bet.closing_odds = closing_odds
+                bet.closing_timestamp = datetime.utcnow()
+
+    def calculate_clv(self, bet: BetRecord) -> Optional[float]:
+        if bet.closing_odds is None:
+            return None
+        your_implied = 1 / bet.placed_odds
+        closing_implied = 1 / bet.closing_odds
+        return round((closing_implied - your_implied) / your_implied * 100, 3)
+
+    def summary_stats(self) -> Dict:
+        clvs = [self.calculate_clv(b) for b in self.bets if b.closing_odds is not None]
+        clvs = [c for c in clvs if c is not None]
+        if not clvs:
+            return {"message": "No settled closing lines yet"}
+        return {
+            "avg_clv_pct": round(np.mean(clvs), 3),
+            "positive_clv_rate": round(sum(1 for c in clvs if c > 0) / len(clvs), 3),
+            "n_bets_tracked": len(clvs),
         }
