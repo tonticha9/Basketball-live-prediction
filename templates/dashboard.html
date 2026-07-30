@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🏀 Live Basketball Prediction Dashboard</title>
+<title>🏀 Live Prediction Engine</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -14,7 +14,8 @@
     animation: gradientShift 15s ease infinite;
     color: #f0f0f0;
     min-height: 100vh;
-    padding: 20px;
+    padding: 16px;
+    padding-bottom: 80px;
   }
 
   @keyframes gradientShift {
@@ -23,13 +24,10 @@
     100% { background-position: 0% 50%; }
   }
 
-  header {
-    text-align: center;
-    padding: 20px 0;
-  }
+  header { text-align: center; padding: 16px 0; }
 
   header h1 {
-    font-size: 28px;
+    font-size: 24px;
     background: linear-gradient(90deg, #ff6b6b, #f7b733, #4ecdc4, #556fb5);
     background-size: 300% 300%;
     -webkit-background-clip: text;
@@ -43,189 +41,227 @@
     100% { background-position: 0% 50%; }
   }
 
+  .pulse-dot {
+    display: inline-block; width: 8px; height: 8px;
+    background: #6bff8f; border-radius: 50%; margin-right: 6px;
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(107,255,143,0.7); }
+    70% { box-shadow: 0 0 0 8px rgba(107,255,143,0); }
+    100% { box-shadow: 0 0 0 0 rgba(107,255,143,0); }
+  }
+
+  .balance-card {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 20px;
+    padding: 24px;
+    text-align: center;
+    max-width: 400px;
+    margin: 20px auto;
+    backdrop-filter: blur(10px);
+  }
+
+  .balance-card .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    color: #a0a0c0; margin-bottom: 8px;
+  }
+
+  .balance-card .amount {
+    font-size: 32px; font-weight: bold; color: #4ecdc4;
+  }
+
+  .change-badge {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: bold;
+  }
+  .change-positive { background: rgba(107,255,143,0.15); color: #6bff8f; }
+  .change-negative { background: rgba(255,107,107,0.15); color: #ff6b6b; }
+  .change-neutral { background: rgba(160,160,192,0.15); color: #a0a0c0; }
+
+  .today-row {
+    display: flex; justify-content: center; gap: 10px;
+    margin-top: 10px; font-size: 12px; color: #a0a0c0;
+  }
+
   .stats-row {
-    display: flex;
-    gap: 16px;
-    flex-wrap: wrap;
-    justify-content: center;
-    margin: 24px 0;
+    display: flex; gap: 12px; flex-wrap: wrap;
+    justify-content: center; margin: 20px 0;
   }
 
   .stat-card {
     background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 16px;
-    padding: 18px 24px;
-    min-width: 140px;
+    border-radius: 14px;
+    padding: 14px 20px;
+    min-width: 110px;
     text-align: center;
     backdrop-filter: blur(10px);
-    transition: transform 0.3s ease;
-    animation: floatUp 0.6s ease-out;
-  }
-
-  .stat-card:hover {
-    transform: translateY(-4px);
-  }
-
-  @keyframes floatUp {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
   }
 
   .stat-card .label {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: #a0a0c0;
-    margin-bottom: 6px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+    color: #a0a0c0; margin-bottom: 4px;
+  }
+  .stat-card .value { font-size: 20px; font-weight: bold; color: #f7b733; }
+
+  .section-title {
+    font-size: 16px; font-weight: bold; margin: 24px 0 12px;
+    padding-left: 4px; border-left: 3px solid #4ecdc4;
+    padding-left: 10px; color: #e0e0f0;
   }
 
-  .stat-card .value {
-    font-size: 24px;
-    font-weight: bold;
+  /* Live matches */
+  .match-card {
+    background: rgba(255,255,255,0.05);
+    border-radius: 14px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    animation: fadeIn 0.4s ease-out;
   }
 
-  .balance { color: #4ecdc4; }
-  .winrate { color: #f7b733; }
-  .roi-positive { color: #6bff8f; }
-  .roi-negative { color: #ff6b6b; }
-
-  .alerts-section {
-    max-width: 700px;
-    margin: 30px auto 0;
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
+  .match-info .teams { font-weight: bold; font-size: 14px; }
+  .match-info .meta { font-size: 12px; color: #a0a0c0; margin-top: 3px; }
+
+  .match-status-dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #555; flex-shrink: 0;
+  }
+
+  .match-status-dot.alert-active {
+    background: #6bff8f;
+    animation: alertPulse 1s infinite;
+    box-shadow: 0 0 8px #6bff8f;
+  }
+
+  @keyframes alertPulse {
+    0% { box-shadow: 0 0 4px #6bff8f; transform: scale(1); }
+    50% { box-shadow: 0 0 16px #6bff8f; transform: scale(1.3); }
+    100% { box-shadow: 0 0 4px #6bff8f; transform: scale(1); }
+  }
+
+  .no-matches, .no-alerts {
+    text-align: center; color: #808090; padding: 30px; font-style: italic;
+    font-size: 13px;
+  }
+
+  /* Alerts */
   .alert-card {
     background: rgba(255,255,255,0.05);
     border-left: 4px solid #4ecdc4;
     border-radius: 10px;
-    padding: 16px;
-    margin-bottom: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
     animation: slideIn 0.4s ease-out;
     position: relative;
     overflow: hidden;
   }
 
   .alert-card::before {
-    content: "";
-    position: absolute;
-    top: 0; left: -100%;
+    content: ""; position: absolute; top: 0; left: -100%;
     width: 100%; height: 100%;
     background: linear-gradient(90deg, transparent, rgba(78,205,196,0.15), transparent);
     animation: shimmer 3s infinite;
   }
+  @keyframes shimmer { 0% { left: -100%; } 100% { left: 100%; } }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: translateX(0); } }
 
-  @keyframes shimmer {
-    0% { left: -100%; }
-    100% { left: 100%; }
-  }
-
-  @keyframes slideIn {
-    from { opacity: 0; transform: translateX(-20px); }
-    to { opacity: 1; transform: translateX(0); }
-  }
-
-  .alert-card .market {
-    font-weight: bold;
-    color: #f7b733;
-    font-size: 15px;
-  }
-
-  .alert-card .details {
-    font-size: 13px;
-    color: #c0c0e0;
-    margin-top: 6px;
-    line-height: 1.6;
-  }
+  .alert-card .market { font-weight: bold; color: #f7b733; font-size: 14px; }
+  .alert-card .details { font-size: 12px; color: #c0c0e0; margin-top: 5px; line-height: 1.5; }
 
   .edge-badge {
-    display: inline-block;
-    background: linear-gradient(90deg, #ff6b6b, #f7b733);
-    padding: 3px 10px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: bold;
-    color: #1a1a2e;
+    display: inline-block; background: linear-gradient(90deg, #ff6b6b, #f7b733);
+    padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold; color: #1a1a2e;
   }
 
   .settle-buttons button {
-    margin-top: 10px;
-    margin-right: 8px;
-    padding: 6px 14px;
-    border: none;
-    border-radius: 8px;
-    font-size: 12px;
-    cursor: pointer;
-    transition: opacity 0.2s;
+    margin-top: 8px; margin-right: 8px; padding: 6px 14px;
+    border: none; border-radius: 8px; font-size: 12px; cursor: pointer;
   }
-
   .btn-won { background: #6bff8f; color: #1a1a2e; }
   .btn-lost { background: #ff6b6b; color: #1a1a2e; }
-  .settle-buttons button:hover { opacity: 0.8; }
 
   .settled-tag {
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 8px;
-    margin-top: 8px;
-    display: inline-block;
+    font-size: 11px; padding: 2px 8px; border-radius: 8px; margin-top: 6px; display: inline-block;
   }
-
   .tag-won { background: rgba(107,255,143,0.2); color: #6bff8f; }
   .tag-lost { background: rgba(255,107,107,0.2); color: #ff6b6b; }
 
-  .no-alerts {
+  /* Bottom nav */
+  .bottom-nav {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: rgba(20,20,35,0.95);
+    backdrop-filter: blur(10px);
+    display: flex; justify-content: space-around;
+    padding: 12px 0;
+    border-top: 1px solid rgba(255,255,255,0.1);
+  }
+  .bottom-nav a {
+    color: #a0a0c0; text-decoration: none; font-size: 12px;
     text-align: center;
-    color: #808090;
-    padding: 40px;
-    font-style: italic;
   }
-
-  .pulse-dot {
-    display: inline-block;
-    width: 8px; height: 8px;
-    background: #6bff8f;
-    border-radius: 50%;
-    margin-right: 6px;
-    animation: pulse 1.5s infinite;
-  }
-
-  @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(107,255,143,0.7); }
-    70% { box-shadow: 0 0 0 8px rgba(107,255,143,0); }
-    100% { box-shadow: 0 0 0 0 rgba(107,255,143,0); }
-  }
+  .bottom-nav a.active { color: #4ecdc4; font-weight: bold; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>🏀 LIVE PREDICTION ENGINE</h1>
-  <p style="color:#a0a0c0; font-size:13px; margin-top:4px;">
+  <p style="color:#a0a0c0; font-size:12px; margin-top:4px;">
     <span class="pulse-dot"></span>Paper Trading Mode — Fake Money Only
   </p>
 </header>
 
-<div class="stats-row" id="statsRow">
-  <div class="stat-card">
-    <div class="label">Balance</div>
-    <div class="value balance" id="balanceVal">${{ account.current_balance }}</div>
+<div class="balance-card">
+  <div class="label">Balance</div>
+  <div class="amount" id="balanceVal">${{ "%.2f"|format(account.current_balance) }}</div>
+  <div class="change-badge {{ 'change-positive' if overall_change > 0 else ('change-negative' if overall_change < 0 else 'change-neutral') }}" id="overallChangeBadge">
+    {{ '+' if overall_change > 0 else '' }}${{ "%.2f"|format(overall_change) }} tangu mwanzo
   </div>
-  <div class="stat-card">
-    <div class="label">Total Bets</div>
-    <div class="value" id="totalBetsVal">{{ account.total_bets_placed }}</div>
-  </div>
-  <div class="stat-card">
-    <div class="label">Win Rate</div>
-    <div class="value winrate" id="winRateVal">-</div>
-  </div>
-  <div class="stat-card">
-    <div class="label">ROI</div>
-    <div class="value" id="roiVal">-</div>
+  <div class="today-row">
+    <span>Leo: <strong id="todaysChangeVal" style="color: {{ '#6bff8f' if todays_change > 0 else ('#ff6b6b' if todays_change < 0 else '#a0a0c0') }}">
+      {{ '+' if todays_change > 0 else '' }}${{ "%.2f"|format(todays_change) }}
+    </strong></span>
   </div>
 </div>
 
-<div class="alerts-section" id="alertsSection">
+<div class="stats-row">
+  <div class="stat-card"><div class="label">Bets</div><div class="value" id="totalBetsVal">{{ account.total_bets_placed }}</div></div>
+  <div class="stat-card"><div class="label">Win Rate</div><div class="value" id="winRateVal">0%</div></div>
+</div>
+
+<div class="section-title">🏀 Mechi Zinazocheza Sasa</div>
+<div id="liveMatchesSection">
+  {% if live_matches %}
+    {% for m in live_matches %}
+    <div class="match-card">
+      <div class="match-info">
+        <div class="teams">{{ m.home_team }} vs {{ m.away_team }}</div>
+        <div class="meta">{{ m.league_name or '' }} | Q{{ m.quarters_completed + 1 }} | Total: {{ m.current_total }}</div>
+      </div>
+      <div class="match-status-dot {{ 'alert-active' if m.has_active_alert else '' }}"></div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="no-matches">Hakuna mechi live sasa hivi...</div>
+  {% endif %}
+</div>
+
+<div class="section-title">🔥 Alerts za Hivi Karibuni</div>
+<div id="alertsSection">
   {% if alerts %}
     {% for alert in alerts %}
     <div class="alert-card" data-id="{{ alert.id }}">
@@ -233,7 +269,6 @@
       <div class="details">
         Match: {{ alert.match_id }} | Odds: {{ alert.offered_odds }} | Prob: {{ (alert.blended_probability * 100) | round(1) }}%
         <br>Stake: ${{ alert.recommended_stake }} | <span class="edge-badge">+{{ alert.edge_pct }}% edge</span>
-        <br><small>{{ alert.fired_at.strftime('%Y-%m-%d %H:%M') }}</small>
       </div>
       {% if alert.settled_result is none %}
       <div class="settle-buttons">
@@ -252,31 +287,86 @@
   {% endif %}
 </div>
 
+<nav class="bottom-nav">
+  <a href="/" class="active">🏠 Dashboard</a>
+  <a href="/history">📊 History</a>
+  <a href="/settings">⚙️ Settings</a>
+</nav>
+
 <script>
 async function settleBet(alertId, won) {
   const res = await fetch(`/api/settle_bet/${alertId}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ won })
   });
-  if (res.ok) {
-    location.reload();
+  if (res.ok) location.reload();
+}
+
+async function refreshDashboard() {
+  try {
+    const res = await fetch('/api/dashboard_data');
+    const data = await res.json();
+
+    document.getElementById('balanceVal').textContent = `$${data.balance.toFixed(2)}`;
+    document.getElementById('totalBetsVal').textContent = data.total_bets;
+    document.getElementById('winRateVal').textContent = `${data.win_rate}%`;
+
+    const badge = document.getElementById('overallChangeBadge');
+    const oc = data.overall_change;
+    badge.textContent = `${oc > 0 ? '+' : ''}$${oc.toFixed(2)} tangu mwanzo`;
+    badge.className = 'change-badge ' + (oc > 0 ? 'change-positive' : oc < 0 ? 'change-negative' : 'change-neutral');
+
+    const todayEl = document.getElementById('todaysChangeVal');
+    const tc = data.todays_change;
+    todayEl.textContent = `${tc > 0 ? '+' : ''}$${tc.toFixed(2)}`;
+    todayEl.style.color = tc > 0 ? '#6bff8f' : tc < 0 ? '#ff6b6b' : '#a0a0c0';
+
+    // Live matches
+    const liveSection = document.getElementById('liveMatchesSection');
+    if (data.live_matches.length === 0) {
+      liveSection.innerHTML = '<div class="no-matches">Hakuna mechi live sasa hivi...</div>';
+    } else {
+      liveSection.innerHTML = data.live_matches.map(m => `
+        <div class="match-card">
+          <div class="match-info">
+            <div class="teams">${m.home_team} vs ${m.away_team}</div>
+            <div class="meta">${m.league_name || ''} | Q${m.quarters_completed + 1} | Total: ${m.current_total}</div>
+          </div>
+          <div class="match-status-dot ${m.has_active_alert ? 'alert-active' : ''}"></div>
+        </div>
+      `).join('');
+    }
+
+    // Alerts
+    const alertsSection = document.getElementById('alertsSection');
+    if (data.alerts.length === 0) {
+      alertsSection.innerHTML = '<div class="no-alerts">Hakuna alerts bado — subiri mchezo uwe live...</div>';
+    } else {
+      alertsSection.innerHTML = data.alerts.map(a => `
+        <div class="alert-card" data-id="${a.id}">
+          <div class="market">${a.market}${a.side ? ' — ' + a.side : ''}</div>
+          <div class="details">
+            Match: ${a.match_id} | Odds: ${a.odds} | Prob: ${(a.probability * 100).toFixed(1)}%
+            <br>Stake: $${a.stake} | <span class="edge-badge">+${a.edge_pct}% edge</span>
+          </div>
+          ${a.settled_result === null ? `
+            <div class="settle-buttons">
+              <button class="btn-won" onclick="settleBet(${a.id}, true)">✓ Won</button>
+              <button class="btn-lost" onclick="settleBet(${a.id}, false)">✗ Lost</button>
+            </div>` : `
+            <span class="settled-tag ${a.settled_result ? 'tag-won' : 'tag-lost'}">
+              ${a.settled_result ? 'WON' : 'LOST'} — P/L: $${a.profit_loss}
+            </span>`}
+        </div>
+      `).join('');
+    }
+  } catch (e) {
+    console.error('Refresh failed', e);
   }
 }
 
-async function refreshStats() {
-  const res = await fetch('/api/account_summary');
-  const data = await res.json();
-  document.getElementById('balanceVal').textContent = `$${data.current_balance}`;
-  document.getElementById('totalBetsVal').textContent = data.total_bets;
-  document.getElementById('winRateVal').textContent = `${data.win_rate}%`;
-  const roiEl = document.getElementById('roiVal');
-  roiEl.textContent = `${data.roi_pct}%`;
-  roiEl.className = 'value ' + (data.roi_pct >= 0 ? 'roi-positive' : 'roi-negative');
-}
-
-refreshStats();
-setInterval(refreshStats, 15000); // refresh every 15s
+refreshDashboard();
+setInterval(refreshDashboard, 10000);
 </script>
 
 </body>
