@@ -1,8 +1,9 @@
 """
 scheduler.py
-Polling loop — now reads API key from database (with expiry check)
-instead of only .env, and updates LiveMatchStatus table so the
-dashboard can show all currently-live matches in real time.
+Polling loop — reads API key from database (with expiry check),
+processes all live matches across ALL markets: Full-game Home/Away,
+Quarter Home/Away, Player Props, Odd/Even, Highest Scoring Quarter.
+Updates LiveMatchStatus for dashboard display.
 """
 
 import requests
@@ -21,6 +22,7 @@ from parsers import (
 )
 from prediction_engine import (
     HomeAwayOrchestrator, QuarterHomeAwayOrchestrator, PlayerPropsOrchestrator,
+    OddEvenOrchestrator, HighestScoringQuarterOrchestrator, LiveOnlyGameTotalModel,
 )
 
 
@@ -32,12 +34,6 @@ class LiveMatchManager:
         self._standings_cache: dict = {}
 
     def _get_active_api_key(self) -> str:
-        """
-        Reads API key from database settings first (set via /settings page).
-        Falls back to .env ALLSPORTS_API_KEY only if DB has none set.
-        Returns empty string if key is missing or expired — poll_cycle
-        will skip the cycle entirely in that case.
-        """
         session = get_db_session()
         try:
             settings = get_or_create_api_key_settings(session)
@@ -47,9 +43,9 @@ class LiveMatchManager:
                     settings.api_key = None
                     settings.is_active = False
                     session.commit()
-                    return Config.ALLSPORTS_API_KEY  # fallback
+                    return Config.ALLSPORTS_API_KEY
                 return settings.api_key
-            return Config.ALLSPORTS_API_KEY  # fallback to .env
+            return Config.ALLSPORTS_API_KEY
         finally:
             session.close()
 
@@ -99,6 +95,10 @@ class LiveMatchManager:
                 "quarter_orch": QuarterHomeAwayOrchestrator(bankroll=self.bankroll,
                                                              ev_alert_threshold=Config.EV_ALERT_THRESHOLD),
                 "player_orch": PlayerPropsOrchestrator(bankroll=self.bankroll),
+                "odd_even_orch": OddEvenOrchestrator(bankroll=self.bankroll),
+                "hsq_orch": HighestScoringQuarterOrchestrator(bankroll=self.bankroll),
+                "live_total_model": LiveOnlyGameTotalModel(),
+                "quarters_ingested": 0,
             }
 
     def _get_elo_diff(self, event: dict, api_key: str) -> float:
@@ -129,7 +129,6 @@ class LiveMatchManager:
 
         session = get_db_session()
         try:
-            # --- Update live match status table (always, for dashboard display) ---
             status_row = session.query(LiveMatchStatus).filter_by(match_id=match_id).first()
             if status_row is None:
                 status_row = LiveMatchStatus(match_id=match_id, last_updated=datetime.utcnow())
@@ -144,7 +143,6 @@ class LiveMatchManager:
             status_row.last_updated = datetime.utcnow()
             has_alert_this_cycle = False
 
-            # --- Store raw snapshot for future backtesting ---
             snapshot = LiveMatchSnapshot(
                 match_id=match_id, league_name=match_state.get("league_name"),
                 home_team=match_state.get("home_team"), away_team=match_state.get("away_team"),
@@ -156,11 +154,13 @@ class LiveMatchManager:
             )
             session.add(snapshot)
 
+            match_bundle = self.active_matches[match_id]
+
             # --- Full-game Home/Away ---
             home_away_odds = AllSportsOddsParser.get_full_game_home_away(odds_data, match_id)
             if home_away_odds:
                 elo_diff = self._get_elo_diff(event, api_key)
-                orch = self.active_matches[match_id]["home_away_orch"]
+                orch = match_bundle["home_away_orch"]
                 orch.wp_model.pregame_elo_diff = elo_diff
                 orch.wp_model.expected_pregame_margin = elo_diff * 0.04
                 alert = orch.evaluate_full_game(match_state, home_away_odds)
@@ -168,26 +168,75 @@ class LiveMatchManager:
                     self._save_alert(session, alert, match_id=match_id)
                     has_alert_this_cycle = True
 
+            # --- Quarter Home/Away (current quarter only) ---
+            current_q = match_state["quarters_completed"] + 1
+            if current_q <= 4:
+                q_odds = AllSportsOddsParser.get_quarter_home_away(odds_data, match_id, current_q)
+                if q_odds and match_state["minutes_elapsed_current_q"] >= 2.0:
+                    completed = match_state["completed_quarters"]
+                    live_home = match_state["current_total"] if not completed else 0
+                    # derive within-quarter diff: current cumulative diff minus diff before this quarter
+                    prior_diff = sum(q["home"] - q["away"] for q in completed)
+                    q_diff = match_state["score_diff"] - prior_diff
+                    q_alert = match_bundle["quarter_orch"].evaluate_current_quarter(
+                        quarter_score_diff=q_diff,
+                        minutes_elapsed_in_q=match_state["minutes_elapsed_current_q"],
+                        odds=q_odds, quarter_number=current_q,
+                    )
+                    if q_alert:
+                        self._save_alert(session, q_alert, match_id=match_id)
+                        has_alert_this_cycle = True
+
             # --- Player Props ---
             player_stats = AllSportsPlayerStatsParser.get_all_players_live_stats(event)
-            player_orch = self.active_matches[match_id]["player_orch"]
+            player_orch = match_bundle["player_orch"]
             for player in player_stats:
                 if player["minutes"] < 3.0:
                     continue
                 milestones = AllSportsPlayerOddsParser.get_all_milestones_for_player(
                     odds_data, match_id, player["player"]
                 )
-                minutes_remaining_game = match_state["minutes_remaining"]
                 for m in milestones:
                     p_alert = player_orch.evaluate_milestone(
                         player_name=player["player"], points_so_far=player["points"],
                         minutes_played=player["minutes"],
-                        minutes_remaining_in_game=minutes_remaining_game,
+                        minutes_remaining_in_game=match_state["minutes_remaining"],
                         threshold_odds=m,
                     )
                     if p_alert:
                         self._save_alert(session, p_alert, match_id=match_id)
                         has_alert_this_cycle = True
+
+            # --- Sync quarters into live total model (for Odd/Even) ---
+            already_ingested = match_bundle["quarters_ingested"]
+            new_count = AllSportsLivescoreParser.sync_orchestrator_quarters(
+                match_bundle["live_total_model"], match_state["completed_quarters"], already_ingested
+            )
+            match_bundle["quarters_ingested"] = new_count
+
+            # --- Odd/Even ---
+            odd_even_odds = AllSportsOddsParser.get_odd_even(odds_data, match_id)
+            if odd_even_odds and match_state["quarters_completed"] >= 1:
+                oe_alert = match_bundle["odd_even_orch"].evaluate(
+                    match_bundle["live_total_model"], match_state["current_total"],
+                    match_state["quarters_completed"], match_state["minutes_elapsed_current_q"],
+                    odd_even_odds,
+                )
+                if oe_alert:
+                    self._save_alert(session, oe_alert, match_id=match_id)
+                    has_alert_this_cycle = True
+
+            # --- Highest Scoring Quarter ---
+            hsq_odds = AllSportsOddsParser.get_highest_scoring_quarter_odds(odds_data, match_id)
+            if hsq_odds and match_state["completed_quarters"]:
+                completed_totals = {
+                    i + 1: q["home"] + q["away"]
+                    for i, q in enumerate(match_state["completed_quarters"])
+                }
+                hsq_alert = match_bundle["hsq_orch"].evaluate(completed_totals, hsq_odds)
+                if hsq_alert:
+                    self._save_alert(session, hsq_alert, match_id=match_id)
+                    has_alert_this_cycle = True
 
             status_row.has_active_alert = has_alert_this_cycle
             session.commit()
@@ -196,8 +245,6 @@ class LiveMatchManager:
             session.close()
 
     def _cleanup_stale_matches(self, live_match_ids_this_cycle: set):
-        """Removes LiveMatchStatus rows for matches no longer live (finished
-        or dropped from feed), and frees their orchestrator instances."""
         session = get_db_session()
         try:
             all_status_rows = session.query(LiveMatchStatus).all()
