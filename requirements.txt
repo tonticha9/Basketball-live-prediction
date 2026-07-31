@@ -4,6 +4,6 @@ psycopg2-binary==2.9.9
 requests==2.32.3
 APScheduler==3.10.4
 numpy==1.26.4
-scipy==1.13.1
+scipy==1.11.4
 python-dotenv==1.0.1
 gunicorn==22.0.0
