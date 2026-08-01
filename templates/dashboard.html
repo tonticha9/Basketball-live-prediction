@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>🏀 Live Prediction Engine</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
     font-family: 'Segoe UI', sans-serif;
@@ -267,7 +267,7 @@
     <div class="alert-card" data-id="{{ alert.id }}">
       <div class="market">{{ alert.market }} {% if alert.side %}— {{ alert.side }}{% endif %}</div>
       <div class="details">
-        Match: {{ alert.match_id }} | Odds: {{ alert.offered_odds }} | Prob: {{ (alert.blended_probability * 100) | round(1) }}%
+        {{ alert.home_team }} vs {{ alert.away_team }} | Odds: {{ alert.offered_odds }} | Prob: {{ (alert.blended_probability * 100) | round(1) }}%
         <br>Stake: ${{ alert.recommended_stake }} | <span class="edge-badge">+{{ alert.edge_pct }}% edge</span>
       </div>
       {% if alert.settled_result is none %}
@@ -346,7 +346,7 @@ async function refreshDashboard() {
         <div class="alert-card" data-id="${a.id}">
           <div class="market">${a.market}${a.side ? ' — ' + a.side : ''}</div>
           <div class="details">
-            Match: ${a.match_id} | Odds: ${a.odds} | Prob: ${(a.probability * 100).toFixed(1)}%
+            ${a.home_team} vs ${a.away_team} | Odds: ${a.odds} | Prob: ${(a.probability * 100).toFixed(1)}%
             <br>Stake: $${a.stake} | <span class="edge-badge">+${a.edge_pct}% edge</span>
           </div>
           ${a.settled_result === null ? `
