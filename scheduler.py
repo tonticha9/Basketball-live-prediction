@@ -5,8 +5,10 @@ processes all live matches across ALL markets: Full-game Home/Away,
 Quarter Home/Away, Player Props, Odd/Even, Highest Scoring Quarter.
 Updates LiveMatchStatus for dashboard display.
 
-FIXED: _fetch() now safely handles non-JSON or non-dict responses
-(e.g. plain-text error messages from AllSportsAPI) instead of crashing.
+FIXES INCLUDED:
+- _fetch() safely handles non-JSON / non-dict responses (no more crashes)
+- Alert deduplication: same match+market+side won't re-fire every poll
+  cycle — only re-fires after a cooldown period (default 5 minutes)
 """
 
 import requests
@@ -35,7 +37,11 @@ class LiveMatchManager:
         self.base_url = Config.ALLSPORTS_BASE_URL
         self.active_matches: dict = {}
         self._standings_cache: dict = {}
+        self._recent_alert_keys: dict = {}  # {"match_id:market:side": last_fired_datetime}
 
+    # =====================================================
+    # API KEY MANAGEMENT
+    # =====================================================
     def _get_active_api_key(self) -> str:
         session = get_db_session()
         try:
@@ -52,15 +58,15 @@ class LiveMatchManager:
         finally:
             session.close()
 
+    # =====================================================
+    # SAFE FETCH
+    # =====================================================
     def _fetch(self, params: dict, api_key: str) -> dict:
         """
-        Fetches from AllSportsAPI. Defensive against:
-        - Non-200 HTTP status (raises via raise_for_status)
-        - Non-JSON responses (e.g. plain text error pages)
-        - JSON that parses to something other than a dict (e.g. a bare
-          string error message like "Invalid API key")
-        Always returns a dict with at least {"result": ...} so callers
-        never crash on .get() calls downstream.
+        Fetches from AllSportsAPI. Defensive against non-200 status,
+        non-JSON responses, and JSON that isn't a dict (e.g. a bare
+        error string). Always returns a dict so callers never crash
+        on .get() calls downstream.
         """
         params["APIkey"] = api_key
         resp = requests.get(self.base_url, params=params, timeout=15)
@@ -77,13 +83,35 @@ class LiveMatchManager:
                   f"Content: {repr(data)[:300]}")
             return {"result": {}}
 
-        # Some AllSportsAPI error responses come back as a dict with an
-        # 'error' key and success=0 rather than raising an HTTP error.
         if data.get("success") == 0:
             print(f"[_fetch] API returned success=0. Full response: {repr(data)[:300]}")
 
         return data
 
+    # =====================================================
+    # ALERT DEDUPLICATION
+    # =====================================================
+    def _should_fire_alert(self, match_id: str, market: str, side: str,
+                            cooldown_seconds: int = 300) -> bool:
+        """
+        Prevents the same alert (same match+market+side) from being saved
+        repeatedly every poll cycle. Only allows re-firing after a cooldown
+        period (default 5 minutes) — enough time for game state to
+        meaningfully change before considering it a 'new' signal.
+        """
+        key = f"{match_id}:{market}:{side}"
+        now = datetime.utcnow()
+        last_fired = self._recent_alert_keys.get(key)
+
+        if last_fired and (now - last_fired).total_seconds() < cooldown_seconds:
+            return False
+
+        self._recent_alert_keys[key] = now
+        return True
+
+    # =====================================================
+    # MAIN POLL LOOP
+    # =====================================================
     def poll_cycle(self):
         print(f"[heartbeat] Poll cycle running at {datetime.utcnow().isoformat()}")
 
@@ -145,6 +173,9 @@ class LiveMatchManager:
             standings, event.get("event_home_team", ""), event.get("event_away_team", "")
         )
 
+    # =====================================================
+    # PER-MATCH PROCESSING
+    # =====================================================
     def _process_match(self, event: dict, match_id: str, api_key: str):
         match_state = AllSportsLivescoreParser.build_match_state(event)
         if match_state is None:
@@ -193,8 +224,7 @@ class LiveMatchManager:
                 orch.wp_model.pregame_elo_diff = elo_diff
                 orch.wp_model.expected_pregame_margin = elo_diff * 0.04
                 alert = orch.evaluate_full_game(match_state, home_away_odds)
-                if alert:
-                    self._save_alert(session, alert, match_id=match_id)
+                if alert and self._save_alert(session, alert, match_id=match_id):
                     has_alert_this_cycle = True
 
             # --- Quarter Home/Away (current quarter only) ---
@@ -210,8 +240,7 @@ class LiveMatchManager:
                         minutes_elapsed_in_q=match_state["minutes_elapsed_current_q"],
                         odds=q_odds, quarter_number=current_q,
                     )
-                    if q_alert:
-                        self._save_alert(session, q_alert, match_id=match_id)
+                    if q_alert and self._save_alert(session, q_alert, match_id=match_id):
                         has_alert_this_cycle = True
 
             # --- Player Props ---
@@ -230,8 +259,7 @@ class LiveMatchManager:
                         minutes_remaining_in_game=match_state["minutes_remaining"],
                         threshold_odds=m,
                     )
-                    if p_alert:
-                        self._save_alert(session, p_alert, match_id=match_id)
+                    if p_alert and self._save_alert(session, p_alert, match_id=match_id):
                         has_alert_this_cycle = True
 
             # --- Sync quarters into live total model (for Odd/Even) ---
@@ -249,8 +277,7 @@ class LiveMatchManager:
                     match_state["quarters_completed"], match_state["minutes_elapsed_current_q"],
                     odd_even_odds,
                 )
-                if oe_alert:
-                    self._save_alert(session, oe_alert, match_id=match_id)
+                if oe_alert and self._save_alert(session, oe_alert, match_id=match_id):
                     has_alert_this_cycle = True
 
             # --- Highest Scoring Quarter ---
@@ -261,8 +288,7 @@ class LiveMatchManager:
                     for i, q in enumerate(match_state["completed_quarters"])
                 }
                 hsq_alert = match_bundle["hsq_orch"].evaluate(completed_totals, hsq_odds)
-                if hsq_alert:
-                    self._save_alert(session, hsq_alert, match_id=match_id)
+                if hsq_alert and self._save_alert(session, hsq_alert, match_id=match_id):
                     has_alert_this_cycle = True
 
             status_row.has_active_alert = has_alert_this_cycle
@@ -283,11 +309,22 @@ class LiveMatchManager:
         finally:
             session.close()
 
-    def _save_alert(self, session, alert: dict, match_id: str):
+    # =====================================================
+    # ALERT SAVING (with deduplication)
+    # =====================================================
+    def _save_alert(self, session, alert: dict, match_id: str) -> bool:
+        """Returns True if a new alert was actually saved, False if it
+        was suppressed due to the cooldown deduplication check."""
+        market = alert["market"]
+        side = alert.get("side") or alert.get("player", "")
+
+        if not self._should_fire_alert(match_id, market, side):
+            return False
+
         db_alert = ValueBetAlert(
             match_id=match_id,
-            market=alert["market"],
-            side=alert.get("side") or alert.get("player", ""),
+            market=market,
+            side=side,
             blended_probability=alert.get("blended_probability") or alert.get("model_probability", 0.0),
             offered_odds=alert["offered_odds"],
             edge_pct=alert["edge_pct"],
@@ -296,6 +333,7 @@ class LiveMatchManager:
         )
         session.add(db_alert)
         print(f"[ALERT] {alert}")
+        return True
 
 
 def create_scheduler():
