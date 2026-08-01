@@ -13,7 +13,6 @@ data — robust regardless of status text format across leagues.
 from typing import Dict, List, Optional
 from prediction_engine import SimpleTeamStrengthEstimator
 
-
 class AllSportsLivescoreParser:
 
     @staticmethod
@@ -69,7 +68,7 @@ class AllSportsLivescoreParser:
         # Best-effort in-quarter clock parsing (only works if API happens
         # to expose a "MM:SS" style status — harmless fallback otherwise)
         raw_status = str(event.get("event_status", ""))
-        minutes_elapsed_current_q = 6.0  # conservative midpoint default
+        minutes_elapsed_current_q = 6.0 # conservative midpoint default
         if ":" in raw_status:
             try:
                 mins, secs = raw_status.split(":")
@@ -92,13 +91,34 @@ class AllSportsLivescoreParser:
         }
 
     @staticmethod
+    def extract_all_quarters_for_finished(event: Dict) -> List[Optional[Dict]]:
+        """
+        For a FINISHED match, returns all 4 quarters (regardless of any
+        status-text ambiguity, since the match is done and all quarter
+        data should be posted). Returns None for any quarter missing data.
+        """
+        scores = event.get("scores", {})
+        keys = ["1stQuarter", "2ndQuarter", "3rdQuarter", "4thQuarter"]
+        result = []
+        for key in keys:
+            q_data = scores.get(key, [])
+            if q_data:
+                entry = q_data[0]
+                result.append({
+                    "home": int(entry.get("score_home", 0) or 0),
+                    "away": int(entry.get("score_away", 0) or 0),
+                })
+            else:
+                result.append(None)
+        return result
+
+    @staticmethod
     def sync_orchestrator_quarters(live_only_model, completed_quarters: List[Dict],
                                     already_ingested_count: int) -> int:
         new_quarters = completed_quarters[already_ingested_count:]
         for q in new_quarters:
             live_only_model.ingest_quarter(home_pts=q["home"], away_pts=q["away"])
         return len(completed_quarters)
-
 
 class AllSportsOddsParser:
     @staticmethod
@@ -176,7 +196,6 @@ class AllSportsOddsParser:
             return None
         return {"home_decimal": home_avg, "draw_decimal": draw_avg, "away_decimal": away_avg}
 
-
 class AllSportsPlayerStatsParser:
     @staticmethod
     def get_all_players_live_stats(event: Dict) -> List[Dict]:
@@ -203,7 +222,6 @@ class AllSportsPlayerStatsParser:
             return int(parts[0]) + int(parts[1]) / 60.0
         except (ValueError, IndexError):
             return 0.0
-
 
 class AllSportsPlayerOddsParser:
     @staticmethod
@@ -235,7 +253,6 @@ class AllSportsPlayerOddsParser:
         if over_avg is None or under_avg is None:
             return None
         return {"over_decimal": over_avg, "under_decimal": under_avg}
-
 
 class AllSportsStandingsParser:
     @staticmethod
