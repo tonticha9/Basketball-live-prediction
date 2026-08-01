@@ -2,25 +2,19 @@
 parsers.py
 Converts raw AllSportsAPI JSON responses into clean, usable data
 structures for the prediction engine.
+
+FIXED: Quarter-completion detection no longer depends on event_status
+text (which some leagues report as numeric codes like "3" instead of
+"3rd Quarter", causing earlier quarters to be silently dropped from the
+total). Now determined directly from which quarter score entries have
+data — robust regardless of status text format across leagues.
 """
 
 from typing import Dict, List, Optional
 from prediction_engine import SimpleTeamStrengthEstimator
 
 
-def _safe_dict(value) -> Dict:
-    """AllSportsAPI sometimes returns '' (empty string) instead of {}
-    for fields that have no data yet (e.g. scores, player_statistics,
-    or a specific odds market). Always coerce to a dict so downstream
-    .get() calls never crash with 'str' object has no attribute 'get'."""
-    return value if isinstance(value, dict) else {}
-
-
 class AllSportsLivescoreParser:
-    LIVE_STATUSES_TEXT = {
-        "1st Quarter": 1, "2nd Quarter": 2, "3rd Quarter": 3, "4th Quarter": 4,
-        "Halftime": 2, "Overtime": 4,
-    }
 
     @staticmethod
     def is_live(event: Dict) -> bool:
@@ -30,67 +24,57 @@ class AllSportsLivescoreParser:
         return True
 
     @staticmethod
-    def get_current_quarter_index(event: Dict) -> int:
-        status = str(event.get("event_status", "")).strip()
-        return AllSportsLivescoreParser.LIVE_STATUSES_TEXT.get(status, 1)
-
-    @staticmethod
-    def extract_quarter_scores(event: Dict, current_q_index: int) -> List[Dict]:
-        scores = _safe_dict(event.get("scores", {}))
-        keys = ["1stQuarter", "2ndQuarter", "3rdQuarter", "4thQuarter"]
-        quarters = []
-        for i, key in enumerate(keys, start=1):
-            if i >= current_q_index:
-                break
-            q_data = scores.get(key, [])
-            if not isinstance(q_data, list):
-                q_data = []
-            if q_data:
-                entry = q_data[0]
-                if not isinstance(entry, dict):
-                    continue
-                quarters.append({
-                    "home": int(entry.get("score_home", 0) or 0),
-                    "away": int(entry.get("score_away", 0) or 0)
-                })
-        return quarters
-
-    @staticmethod
-    def get_current_quarter_live_score(event: Dict, current_q_index: int) -> Dict:
-        scores = _safe_dict(event.get("scores", {}))
-        keys = ["1stQuarter", "2ndQuarter", "3rdQuarter", "4thQuarter"]
-        key = keys[current_q_index - 1]
-        q_data = scores.get(key, [])
-        if not isinstance(q_data, list):
-            q_data = []
-        if q_data:
-            entry = q_data[0]
-            if isinstance(entry, dict):
-                return {"home": int(entry.get("score_home", 0) or 0),
-                        "away": int(entry.get("score_away", 0) or 0)}
-        return {"home": 0, "away": 0}
-
-    @staticmethod
     def build_match_state(event: Dict) -> Optional[Dict]:
         if not AllSportsLivescoreParser.is_live(event):
             return None
 
-        current_q_index = AllSportsLivescoreParser.get_current_quarter_index(event)
-        completed_quarters = AllSportsLivescoreParser.extract_quarter_scores(event, current_q_index)
-        live_q_score = AllSportsLivescoreParser.get_current_quarter_live_score(event, current_q_index)
+        scores = event.get("scores", {})
+        keys = ["1stQuarter", "2ndQuarter", "3rdQuarter", "4thQuarter"]
 
-        completed_home = sum(q["home"] for q in completed_quarters)
-        completed_away = sum(q["away"] for q in completed_quarters)
-        current_total = completed_home + completed_away + live_q_score["home"] + live_q_score["away"]
-        score_diff = (completed_home + live_q_score["home"]) - (completed_away + live_q_score["away"])
+        quarter_entries: List[Optional[Dict]] = []
+        for key in keys:
+            q_data = scores.get(key, [])
+            if q_data:
+                entry = q_data[0]
+                quarter_entries.append({
+                    "home": int(entry.get("score_home", 0) or 0),
+                    "away": int(entry.get("score_away", 0) or 0),
+                })
+            else:
+                quarter_entries.append(None)
 
-        q_completed_count = len(completed_quarters)
+        # Find the LAST quarter index that has any data — this is either
+        # the in-progress quarter (partial score) or the most recently
+        # completed one (if between quarters, e.g. halftime break).
+        last_idx = -1
+        for i, q in enumerate(quarter_entries):
+            if q is not None:
+                last_idx = i
+
+        if last_idx == -1:
+            # Game marked live but no quarter data posted yet (opening tip-off)
+            completed_quarters: List[Dict] = []
+            current_total = 0
+            score_diff = 0
+            quarters_completed = 0
+        else:
+            completed_quarters = [q for q in quarter_entries[:last_idx] if q is not None]
+            live_entry = quarter_entries[last_idx]
+            completed_home = sum(q["home"] for q in completed_quarters)
+            completed_away = sum(q["away"] for q in completed_quarters)
+            current_total = completed_home + completed_away + live_entry["home"] + live_entry["away"]
+            score_diff = (completed_home + live_entry["home"]) - (completed_away + live_entry["away"])
+            quarters_completed = len(completed_quarters)
+
+        # Best-effort in-quarter clock parsing (only works if API happens
+        # to expose a "MM:SS" style status — harmless fallback otherwise)
         raw_status = str(event.get("event_status", ""))
-        minutes_elapsed_current_q = 6.0
+        minutes_elapsed_current_q = 6.0  # conservative midpoint default
         if ":" in raw_status:
             try:
                 mins, secs = raw_status.split(":")
                 minutes_elapsed_current_q = 12.0 - (int(mins) + int(secs) / 60.0)
+                minutes_elapsed_current_q = max(0.0, min(minutes_elapsed_current_q, 12.0))
             except ValueError:
                 pass
 
@@ -98,11 +82,11 @@ class AllSportsLivescoreParser:
             "match_id": str(event.get("event_key")),
             "home_team": event.get("event_home_team"),
             "away_team": event.get("event_away_team"),
-            "quarters_completed": q_completed_count,
+            "quarters_completed": quarters_completed,
             "minutes_elapsed_current_q": minutes_elapsed_current_q,
             "current_total": current_total,
             "score_diff": score_diff,
-            "minutes_remaining": max(48.0 - (q_completed_count * 12.0 + minutes_elapsed_current_q), 0.0),
+            "minutes_remaining": max(48.0 - (quarters_completed * 12.0 + minutes_elapsed_current_q), 0.0),
             "completed_quarters": completed_quarters,
             "league_name": event.get("league_name"),
         }
@@ -119,7 +103,6 @@ class AllSportsLivescoreParser:
 class AllSportsOddsParser:
     @staticmethod
     def _average_odds(book_dict: Dict[str, str]) -> Optional[float]:
-        book_dict = _safe_dict(book_dict)
         if not book_dict:
             return None
         values = [float(v) for v in book_dict.values() if v]
@@ -127,8 +110,8 @@ class AllSportsOddsParser:
 
     @staticmethod
     def get_full_game_home_away(odds_response: Dict, match_id: str) -> Optional[Dict]:
-        match_odds = _safe_dict(_safe_dict(odds_response.get("result", {})).get(str(match_id), {}))
-        market = _safe_dict(match_odds.get("Home/Away", {}))
+        match_odds = odds_response.get("result", {}).get(str(match_id), {})
+        market = match_odds.get("Home/Away", {})
         home_avg = AllSportsOddsParser._average_odds(market.get("Home", {}))
         away_avg = AllSportsOddsParser._average_odds(market.get("Away", {}))
         if home_avg is None or away_avg is None:
@@ -140,8 +123,19 @@ class AllSportsOddsParser:
         ordinal = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th"}.get(quarter)
         if not ordinal:
             return None
-        match_odds = _safe_dict(_safe_dict(odds_response.get("result", {})).get(str(match_id), {}))
-        market = _safe_dict(match_odds.get(f"Home/Away - {ordinal} Qtr", {}))
+        match_odds = odds_response.get("result", {}).get(str(match_id), {})
+        market = match_odds.get(f"Home/Away - {ordinal} Qtr", {})
+        home_avg = AllSportsOddsParser._average_odds(market.get("Home", {}))
+        away_avg = AllSportsOddsParser._average_odds(market.get("Away", {}))
+        if home_avg is None or away_avg is None:
+            return None
+        return {"home_decimal": home_avg, "away_decimal": away_avg}
+
+    @staticmethod
+    def get_half_home_away(odds_response: Dict, match_id: str, half: int) -> Optional[Dict]:
+        ordinal = "1st" if half == 1 else "2nd"
+        match_odds = odds_response.get("result", {}).get(str(match_id), {})
+        market = match_odds.get(f"Home/Away - {ordinal} Half", {})
         home_avg = AllSportsOddsParser._average_odds(market.get("Home", {}))
         away_avg = AllSportsOddsParser._average_odds(market.get("Away", {}))
         if home_avg is None or away_avg is None:
@@ -150,8 +144,8 @@ class AllSportsOddsParser:
 
     @staticmethod
     def get_odd_even(odds_response: Dict, match_id: str) -> Optional[Dict]:
-        match_odds = _safe_dict(_safe_dict(odds_response.get("result", {})).get(str(match_id), {}))
-        market = _safe_dict(match_odds.get("Odd/Even (Including OT)", {}))
+        match_odds = odds_response.get("result", {}).get(str(match_id), {})
+        market = match_odds.get("Odd/Even (Including OT)", {})
         odd_avg = AllSportsOddsParser._average_odds(market.get("Odd", {}))
         even_avg = AllSportsOddsParser._average_odds(market.get("Even", {}))
         if odd_avg is None or even_avg is None:
@@ -160,37 +154,45 @@ class AllSportsOddsParser:
 
     @staticmethod
     def get_highest_scoring_quarter_odds(odds_response: Dict, match_id: str) -> Optional[Dict[int, float]]:
-        match_odds = _safe_dict(_safe_dict(odds_response.get("result", {})).get(str(match_id), {}))
-        market = _safe_dict(match_odds.get("Highest Scoring Quarter", {}))
+        match_odds = odds_response.get("result", {}).get(str(match_id), {})
+        market = match_odds.get("Highest Scoring Quarter", {})
         result = {}
         ordinal_map = {"1st": 1, "2nd": 2, "3rd": 3, "4th": 4}
         for key, ord_num in ordinal_map.items():
-            sub_market = _safe_dict(market.get(f"Highest Scoring Quarter {key}", {}))
+            sub_market = market.get(f"Highest Scoring Quarter {key}", {})
             avg = AllSportsOddsParser._average_odds(sub_market.get("", {}))
             if avg:
                 result[ord_num] = avg
         return result if result else None
+
+    @staticmethod
+    def get_team_highest_scoring_quarter(odds_response: Dict, match_id: str) -> Optional[Dict]:
+        match_odds = odds_response.get("result", {}).get(str(match_id), {})
+        market = match_odds.get("Team with Highest Scoring Quarter", {})
+        home_avg = AllSportsOddsParser._average_odds(market.get("Home", {}))
+        draw_avg = AllSportsOddsParser._average_odds(market.get("Draw", {}))
+        away_avg = AllSportsOddsParser._average_odds(market.get("Away", {}))
+        if home_avg is None or draw_avg is None or away_avg is None:
+            return None
+        return {"home_decimal": home_avg, "draw_decimal": draw_avg, "away_decimal": away_avg}
 
 
 class AllSportsPlayerStatsParser:
     @staticmethod
     def get_all_players_live_stats(event: Dict) -> List[Dict]:
         results = []
-        player_stats = _safe_dict(event.get("player_statistics", {}))
         for team_side in ["home_team", "away_team"]:
-            players = player_stats.get(team_side, [])
-            if not isinstance(players, list):
-                continue
+            players = event.get("player_statistics", {}).get(team_side, [])
             for p in players:
-                if not isinstance(p, dict):
-                    continue
                 pts_raw = p.get("player_points", "0")
                 pts = int(pts_raw) if pts_raw not in ("-", "", None) else 0
+                assists_raw = p.get("player_assists", "0")
+                assists = int(assists_raw) if assists_raw not in ("-", "", None) else 0
                 mins_raw = p.get("player_minutes", "0:00")
                 mins = AllSportsPlayerStatsParser._parse_minutes(mins_raw)
                 results.append({
                     "player": p.get("player"), "team_side": team_side,
-                    "points": pts, "minutes": mins,
+                    "points": pts, "assists": assists, "minutes": mins,
                 })
         return results
 
@@ -207,14 +209,13 @@ class AllSportsPlayerOddsParser:
     @staticmethod
     def get_all_milestones_for_player(odds_response: Dict, match_id: str,
                                        player_name: str) -> List[Dict]:
-        match_odds = _safe_dict(_safe_dict(odds_response.get("result", {})).get(str(match_id), {}))
-        milestones = _safe_dict(match_odds.get("Player Points Milestones", {}))
+        match_odds = odds_response.get("result", {}).get(str(match_id), {})
+        milestones = match_odds.get("Player Points Milestones", {})
         market_key = f"Player Points Milestones {player_name}"
-        player_market = _safe_dict(milestones.get(market_key, {}))
+        player_market = milestones.get(market_key, {})
 
         results = []
         for threshold_str, book_odds in player_market.items():
-            book_odds = _safe_dict(book_odds)
             values = [float(v) for v in book_odds.values() if v]
             if values:
                 results.append({
@@ -223,16 +224,24 @@ class AllSportsPlayerOddsParser:
                 })
         return results
 
+    @staticmethod
+    def get_points_assists_odds(odds_response: Dict, match_id: str, player_name: str) -> Optional[Dict]:
+        match_odds = odds_response.get("result", {}).get(str(match_id), {})
+        market = match_odds.get("Player Points and Assists", {})
+        market_key = f"Player Points and Assists {player_name}"
+        player_market = market.get(market_key, {})
+        over_avg = AllSportsOddsParser._average_odds(player_market.get("Over", {}))
+        under_avg = AllSportsOddsParser._average_odds(player_market.get("Under", {}))
+        if over_avg is None or under_avg is None:
+            return None
+        return {"over_decimal": over_avg, "under_decimal": under_avg}
+
 
 class AllSportsStandingsParser:
     @staticmethod
     def extract_team_record(standings_response: Dict, team_name: str) -> Optional[Dict]:
         results = standings_response.get("result", [])
-        if not isinstance(results, list):
-            return None
         for entry in results:
-            if not isinstance(entry, dict):
-                continue
             if entry.get("standing_team", "").strip().lower() == team_name.strip().lower():
                 wins = int(entry.get("standing_W", 0) or 0)
                 losses = int(entry.get("standing_L", 0) or 0)
