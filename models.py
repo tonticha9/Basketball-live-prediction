@@ -1,10 +1,15 @@
 """
 models.py
 SQLAlchemy models. All tables prefixed 'bball_' to safely coexist
-with your existing tennis tables in the same Render Postgres database.
+with your existing tennis tables in the same Postgres database.
+
+UPDATED: ValueBetAlert now stores home_team/away_team (for display)
+and market_type/settlement_meta (for automatic settlement). Includes
+a safe migration step that adds these columns to an already-existing
+table without dropping data.
 """
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, JSON
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, JSON, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime
 from config import Config
@@ -46,6 +51,12 @@ class ValueBetAlert(Base):
     settled_result = Column(Boolean, nullable=True)
     profit_loss = Column(Float, nullable=True)
     clv_pct = Column(Float, nullable=True)
+
+    # --- Added for team-name display + automatic settlement ---
+    home_team = Column(String, nullable=True)
+    away_team = Column(String, nullable=True)
+    market_type = Column(String, nullable=True)   # e.g. "full_game_ha", "quarter_ha", "player_points", "odd_even", "hsq"
+    settlement_meta = Column(JSON, nullable=True)  # e.g. {"quarter_number": 1} or {"player_name": "...", "threshold": 20.0}
 
 
 class TeamStrengthCache(Base):
@@ -145,10 +156,33 @@ engine = create_engine(Config.DATABASE_URL, **Config.SQLALCHEMY_ENGINE_OPTIONS)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
+def _run_safe_migrations():
+    """
+    Adds new columns to bball_value_bet_alerts if they don't already
+    exist. Base.metadata.create_all() only creates NEW tables — it does
+    NOT alter existing ones, so this manual step is required whenever
+    new columns are added to an already-deployed table.
+    """
+    migration_statements = [
+        "ALTER TABLE bball_value_bet_alerts ADD COLUMN IF NOT EXISTS home_team VARCHAR",
+        "ALTER TABLE bball_value_bet_alerts ADD COLUMN IF NOT EXISTS away_team VARCHAR",
+        "ALTER TABLE bball_value_bet_alerts ADD COLUMN IF NOT EXISTS market_type VARCHAR",
+        "ALTER TABLE bball_value_bet_alerts ADD COLUMN IF NOT EXISTS settlement_meta JSON",
+    ]
+    with engine.connect() as conn:
+        for stmt in migration_statements:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception as e:
+                print(f"[migration] Skipped/failed: {stmt} — {e}")
+
+
 def init_db():
-    """Creates all bball_ tables if they don't exist yet. Safe to call
-    repeatedly — won't touch or affect any existing tennis tables."""
+    """Creates all bball_ tables if they don't exist yet, then runs
+    safe column migrations for existing tables. Safe to call repeatedly."""
     Base.metadata.create_all(bind=engine)
+    _run_safe_migrations()
 
 
 def get_db_session():
