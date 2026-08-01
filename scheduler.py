@@ -4,6 +4,9 @@ Polling loop — reads API key from database (with expiry check),
 processes all live matches across ALL markets: Full-game Home/Away,
 Quarter Home/Away, Player Props, Odd/Even, Highest Scoring Quarter.
 Updates LiveMatchStatus for dashboard display.
+
+FIXED: _fetch() now safely handles non-JSON or non-dict responses
+(e.g. plain-text error messages from AllSportsAPI) instead of crashing.
 """
 
 import requests
@@ -50,10 +53,36 @@ class LiveMatchManager:
             session.close()
 
     def _fetch(self, params: dict, api_key: str) -> dict:
+        """
+        Fetches from AllSportsAPI. Defensive against:
+        - Non-200 HTTP status (raises via raise_for_status)
+        - Non-JSON responses (e.g. plain text error pages)
+        - JSON that parses to something other than a dict (e.g. a bare
+          string error message like "Invalid API key")
+        Always returns a dict with at least {"result": ...} so callers
+        never crash on .get() calls downstream.
+        """
         params["APIkey"] = api_key
         resp = requests.get(self.base_url, params=params, timeout=15)
         resp.raise_for_status()
-        return resp.json()
+
+        try:
+            data = resp.json()
+        except ValueError:
+            print(f"[_fetch] Response was not valid JSON. Raw text: {resp.text[:300]}")
+            return {"result": {}}
+
+        if not isinstance(data, dict):
+            print(f"[_fetch] Unexpected response type ({type(data).__name__}). "
+                  f"Content: {repr(data)[:300]}")
+            return {"result": {}}
+
+        # Some AllSportsAPI error responses come back as a dict with an
+        # 'error' key and success=0 rather than raising an HTTP error.
+        if data.get("success") == 0:
+            print(f"[_fetch] API returned success=0. Full response: {repr(data)[:300]}")
+
+        return data
 
     def poll_cycle(self):
         print(f"[heartbeat] Poll cycle running at {datetime.utcnow().isoformat()}")
@@ -71,7 +100,7 @@ class LiveMatchManager:
 
         live_events = [
             e for e in livescore_data.get("result", [])
-            if AllSportsLivescoreParser.is_live(e)
+            if isinstance(e, dict) and AllSportsLivescoreParser.is_live(e)
         ]
 
         live_match_ids_this_cycle = set()
@@ -174,8 +203,6 @@ class LiveMatchManager:
                 q_odds = AllSportsOddsParser.get_quarter_home_away(odds_data, match_id, current_q)
                 if q_odds and match_state["minutes_elapsed_current_q"] >= 2.0:
                     completed = match_state["completed_quarters"]
-                    live_home = match_state["current_total"] if not completed else 0
-                    # derive within-quarter diff: current cumulative diff minus diff before this quarter
                     prior_diff = sum(q["home"] - q["away"] for q in completed)
                     q_diff = match_state["score_diff"] - prior_diff
                     q_alert = match_bundle["quarter_orch"].evaluate_current_quarter(
