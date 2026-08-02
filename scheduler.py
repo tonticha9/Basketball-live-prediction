@@ -1,18 +1,19 @@
 """
 scheduler.py
-Polling loop with automatic settlement. When a match's status becomes
-"Finished", any pending alerts for it are resolved automatically by
-comparing the prediction against the final result.
+Polling loop with automatic settlement AND database-backed alert
+deduplication (survives process restarts, unlike in-memory dicts).
+Also drops the heavy raw_odds_json snapshot to reduce memory pressure
+on low-RAM instances.
 """
 
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from config import Config
 from models import (
     get_db_session, LiveMatchSnapshot, ValueBetAlert, LiveMatchStatus,
-    get_or_create_paper_account, get_or_create_api_key_settings,
+    RecentAlertKey, get_or_create_paper_account, get_or_create_api_key_settings,
 )
 from parsers import (
     AllSportsLivescoreParser, AllSportsOddsParser,
@@ -31,7 +32,7 @@ class LiveMatchManager:
         self.base_url = Config.ALLSPORTS_BASE_URL
         self.active_matches = {}
         self._standings_cache = {}
-        self._recent_alert_keys = {}
+        self._standings_cache_time = {}
 
     def _get_active_api_key(self) -> str:
         session = get_db_session()
@@ -56,23 +57,37 @@ class LiveMatchManager:
         try:
             data = resp.json()
         except ValueError:
-            print(f"[_fetch] Response was not valid JSON. Raw text: {resp.text[:300]}")
+            print(f"[_fetch] Response was not valid JSON. Raw text: {resp.text[:200]}")
             return {"result": {}}
         if not isinstance(data, dict):
-            print(f"[_fetch] Unexpected response type ({type(data).__name__}). Content: {repr(data)[:300]}")
+            print(f"[_fetch] Unexpected response type ({type(data).__name__}).")
             return {"result": {}}
         if data.get("success") == 0:
-            print(f"[_fetch] API returned success=0. Full response: {repr(data)[:300]}")
+            print(f"[_fetch] API returned success=0.")
         return data
 
-    def _should_fire_alert(self, match_id, market, side, cooldown_seconds=300):
+    def _should_fire_alert(self, session, match_id, market, side, cooldown_seconds=300) -> bool:
+        """
+        Database-backed deduplication. Survives process restarts since
+        it's stored in Postgres, not Python memory.
+        """
         key = f"{match_id}:{market}:{side}"
         now = datetime.utcnow()
-        last_fired = self._recent_alert_keys.get(key)
-        if last_fired and (now - last_fired).total_seconds() < cooldown_seconds:
-            return False
-        self._recent_alert_keys[key] = now
+
+        existing = session.query(RecentAlertKey).filter_by(alert_key=key).first()
+        if existing:
+            if (now - existing.last_fired_at).total_seconds() < cooldown_seconds:
+                return False
+            existing.last_fired_at = now
+        else:
+            session.add(RecentAlertKey(alert_key=key, last_fired_at=now))
+
         return True
+
+    def _cleanup_old_dedup_keys(self, session, max_age_hours=6):
+        """Prevents the dedup table from growing unbounded over time."""
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        session.query(RecentAlertKey).filter(RecentAlertKey.last_fired_at < cutoff).delete()
 
     def poll_cycle(self):
         print(f"[heartbeat] Poll cycle running at {datetime.utcnow().isoformat()}")
@@ -126,13 +141,20 @@ class LiveMatchManager:
 
     def _get_elo_diff(self, event, api_key):
         league_key = event.get("league_key")
-        if league_key not in self._standings_cache:
+        now = datetime.utcnow()
+        cache_time = self._standings_cache_time.get(league_key)
+
+        # Refresh standings at most once per hour per league (reduces both
+        # API calls and memory churn from repeatedly storing large payloads)
+        if league_key not in self._standings_cache or (cache_time and (now - cache_time).total_seconds() > 3600):
             try:
                 self._standings_cache[league_key] = self._fetch(
                     {"met": "Standings", "leagueId": league_key}, api_key
                 )
+                self._standings_cache_time[league_key] = now
             except requests.RequestException:
                 self._standings_cache[league_key] = {"result": []}
+
         standings = self._standings_cache[league_key]
         return AllSportsStandingsParser.get_matchup_elo_diff(
             standings, event.get("event_home_team", ""), event.get("event_away_team", "")
@@ -168,6 +190,9 @@ class LiveMatchManager:
             status_row.last_updated = datetime.utcnow()
             has_alert_this_cycle = False
 
+            # NOTE: raw_odds_json intentionally NOT stored here anymore —
+            # the full odds payload (hundreds of bookmaker entries) was a
+            # major source of memory pressure on the low-RAM instance.
             snapshot = LiveMatchSnapshot(
                 match_id=match_id, league_name=match_state.get("league_name"),
                 home_team=home_team, away_team=away_team,
@@ -175,7 +200,7 @@ class LiveMatchManager:
                 minutes_elapsed_current_q=match_state["minutes_elapsed_current_q"],
                 current_total=match_state["current_total"], score_diff=match_state["score_diff"],
                 minutes_remaining=match_state["minutes_remaining"],
-                raw_odds_json=odds_data, polled_at=datetime.utcnow(),
+                raw_odds_json=None, polled_at=datetime.utcnow(),
             )
             session.add(snapshot)
 
@@ -258,6 +283,7 @@ class LiveMatchManager:
                     has_alert_this_cycle = True
 
             status_row.has_active_alert = has_alert_this_cycle
+            self._cleanup_old_dedup_keys(session)
             session.commit()
 
         finally:
@@ -279,7 +305,7 @@ class LiveMatchManager:
         market = alert["market"]
         side = alert.get("side") or alert.get("player", "")
 
-        if not self._should_fire_alert(match_id, market, side):
+        if not self._should_fire_alert(session, match_id, market, side):
             return False
 
         db_alert = ValueBetAlert(
