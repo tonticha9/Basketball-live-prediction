@@ -1,10 +1,8 @@
 """
 scheduler.py
-Polling loop with automatic settlement: when AllSportsAPI's Livescore
-feed shows a match as "Finished", any pending (unsettled) alerts for
-that match are automatically resolved by comparing the alert's
-prediction against the actual final result — no manual Won/Lost
-clicking required.
+Polling loop with automatic settlement. When a match's status becomes
+"Finished", any pending alerts for it are resolved automatically by
+comparing the prediction against the final result.
 """
 
 import requests
@@ -14,8 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from config import Config
 from models import (
     get_db_session, LiveMatchSnapshot, ValueBetAlert, LiveMatchStatus,
-    PaperTradingAccount, get_or_create_paper_account,
-    get_or_create_api_key_settings,
+    get_or_create_paper_account, get_or_create_api_key_settings,
 )
 from parsers import (
     AllSportsLivescoreParser, AllSportsOddsParser,
@@ -36,9 +33,6 @@ class LiveMatchManager:
         self._standings_cache = {}
         self._recent_alert_keys = {}
 
-    # =====================================================
-    # API KEY
-    # =====================================================
     def _get_active_api_key(self) -> str:
         session = get_db_session()
         try:
@@ -80,9 +74,6 @@ class LiveMatchManager:
         self._recent_alert_keys[key] = now
         return True
 
-    # =====================================================
-    # MAIN POLL LOOP
-    # =====================================================
     def poll_cycle(self):
         print(f"[heartbeat] Poll cycle running at {datetime.utcnow().isoformat()}")
 
@@ -98,12 +89,8 @@ class LiveMatchManager:
             return
 
         all_events = [e for e in livescore_data.get("result", []) if isinstance(e, dict)]
-
         live_events = [e for e in all_events if AllSportsLivescoreParser.is_live(e)]
-        finished_events = [
-            e for e in all_events
-            if str(e.get("event_status", "")).strip() == "Finished"
-        ]
+        finished_events = [e for e in all_events if str(e.get("event_status", "")).strip() == "Finished"]
 
         live_match_ids_this_cycle = set()
 
@@ -151,9 +138,6 @@ class LiveMatchManager:
             standings, event.get("event_home_team", ""), event.get("event_away_team", "")
         )
 
-    # =====================================================
-    # PER-MATCH PROCESSING (live matches)
-    # =====================================================
     def _process_match(self, event, match_id, api_key):
         match_state = AllSportsLivescoreParser.build_match_state(event)
         if match_state is None:
@@ -197,7 +181,6 @@ class LiveMatchManager:
 
             match_bundle = self.active_matches[match_id]
 
-            # --- Full-game Home/Away ---
             home_away_odds = AllSportsOddsParser.get_full_game_home_away(odds_data, match_id)
             if home_away_odds:
                 elo_diff = self._get_elo_diff(event, api_key)
@@ -205,13 +188,10 @@ class LiveMatchManager:
                 orch.wp_model.pregame_elo_diff = elo_diff
                 orch.wp_model.expected_pregame_margin = elo_diff * 0.04
                 alert = orch.evaluate_full_game(match_state, home_away_odds)
-                if alert and self._save_alert(
-                    session, alert, match_id, home_team, away_team,
-                    market_type="full_game_ha", settlement_meta=None,
-                ):
+                if alert and self._save_alert(session, alert, match_id, home_team, away_team,
+                                               "full_game_ha", None):
                     has_alert_this_cycle = True
 
-            # --- Quarter Home/Away ---
             current_q = match_state["quarters_completed"] + 1
             if current_q <= 4:
                 q_odds = AllSportsOddsParser.get_quarter_home_away(odds_data, match_id, current_q)
@@ -224,13 +204,10 @@ class LiveMatchManager:
                         minutes_elapsed_in_q=match_state["minutes_elapsed_current_q"],
                         odds=q_odds, quarter_number=current_q,
                     )
-                    if q_alert and self._save_alert(
-                        session, q_alert, match_id, home_team, away_team,
-                        market_type="quarter_ha", settlement_meta={"quarter_number": current_q},
-                    ):
+                    if q_alert and self._save_alert(session, q_alert, match_id, home_team, away_team,
+                                                     "quarter_ha", {"quarter_number": current_q}):
                         has_alert_this_cycle = True
 
-            # --- Player Props ---
             player_stats = AllSportsPlayerStatsParser.get_all_players_live_stats(event)
             player_orch = match_bundle["player_orch"]
             for player in player_stats:
@@ -248,12 +225,10 @@ class LiveMatchManager:
                     )
                     if p_alert and self._save_alert(
                         session, p_alert, match_id, home_team, away_team,
-                        market_type="player_points",
-                        settlement_meta={"player_name": player["player"], "threshold": m["threshold"]},
+                        "player_points", {"player_name": player["player"], "threshold": m["threshold"]},
                     ):
                         has_alert_this_cycle = True
 
-            # --- Sync quarters (Odd/Even) ---
             already_ingested = match_bundle["quarters_ingested"]
             new_count = AllSportsLivescoreParser.sync_orchestrator_quarters(
                 match_bundle["live_total_model"], match_state["completed_quarters"], already_ingested
@@ -267,13 +242,10 @@ class LiveMatchManager:
                     match_state["quarters_completed"], match_state["minutes_elapsed_current_q"],
                     odd_even_odds,
                 )
-                if oe_alert and self._save_alert(
-                    session, oe_alert, match_id, home_team, away_team,
-                    market_type="odd_even", settlement_meta=None,
-                ):
+                if oe_alert and self._save_alert(session, oe_alert, match_id, home_team, away_team,
+                                                  "odd_even", None):
                     has_alert_this_cycle = True
 
-            # --- Highest Scoring Quarter ---
             hsq_odds = AllSportsOddsParser.get_highest_scoring_quarter_odds(odds_data, match_id)
             if hsq_odds and match_state["completed_quarters"]:
                 completed_totals = {
@@ -281,10 +253,8 @@ class LiveMatchManager:
                     for i, q in enumerate(match_state["completed_quarters"])
                 }
                 hsq_alert = match_bundle["hsq_orch"].evaluate(completed_totals, hsq_odds)
-                if hsq_alert and self._save_alert(
-                    session, hsq_alert, match_id, home_team, away_team,
-                    market_type="hsq", settlement_meta=None,
-                ):
+                if hsq_alert and self._save_alert(session, hsq_alert, match_id, home_team, away_team,
+                                                   "hsq", None):
                     has_alert_this_cycle = True
 
             status_row.has_active_alert = has_alert_this_cycle
@@ -305,11 +275,7 @@ class LiveMatchManager:
         finally:
             session.close()
 
-    # =====================================================
-    # ALERT SAVING (with team names + settlement metadata)
-    # =====================================================
-    def _save_alert(self, session, alert, match_id, home_team, away_team,
-                     market_type, settlement_meta):
+    def _save_alert(self, session, alert, match_id, home_team, away_team, market_type, settlement_meta):
         market = alert["market"]
         side = alert.get("side") or alert.get("player", "")
 
@@ -317,26 +283,17 @@ class LiveMatchManager:
             return False
 
         db_alert = ValueBetAlert(
-            match_id=match_id,
-            market=market,
-            side=side,
+            match_id=match_id, market=market, side=side,
             blended_probability=alert.get("blended_probability") or alert.get("model_probability", 0.0),
-            offered_odds=alert["offered_odds"],
-            edge_pct=alert["edge_pct"],
-            recommended_stake=alert["recommended_stake"],
-            fired_at=datetime.utcnow(),
-            home_team=home_team,
-            away_team=away_team,
-            market_type=market_type,
-            settlement_meta=settlement_meta,
+            offered_odds=alert["offered_odds"], edge_pct=alert["edge_pct"],
+            recommended_stake=alert["recommended_stake"], fired_at=datetime.utcnow(),
+            home_team=home_team, away_team=away_team,
+            market_type=market_type, settlement_meta=settlement_meta,
         )
         session.add(db_alert)
         print(f"[ALERT] {home_team} vs {away_team} — {alert}")
         return True
 
-    # =====================================================
-    # AUTOMATIC SETTLEMENT
-    # =====================================================
     def _settle_finished_matches(self, finished_events):
         if not finished_events:
             return
@@ -359,7 +316,7 @@ class LiveMatchManager:
                     home_final = int(home_final_str.strip())
                     away_final = int(away_final_str.strip())
                 except (ValueError, AttributeError):
-                    continue  # can't parse final score yet — try again next cycle
+                    continue
 
                 quarters = AllSportsLivescoreParser.extract_all_quarters_for_finished(event)
                 player_stats = AllSportsPlayerStatsParser.get_all_players_live_stats(event)
@@ -367,7 +324,7 @@ class LiveMatchManager:
                 for alert in pending:
                     won = self._determine_result(alert, home_final, away_final, quarters, player_stats)
                     if won is None:
-                        continue  # not enough data yet to settle this one — try again later
+                        continue
                     self._apply_settlement(session, alert, won)
 
             session.commit()
@@ -375,7 +332,6 @@ class LiveMatchManager:
             session.close()
 
     def _determine_result(self, alert, home_final, away_final, quarters, player_stats):
-        """Returns True (won), False (lost), or None (cannot determine yet)."""
         mtype = alert.market_type
 
         if mtype == "full_game_ha":
@@ -392,7 +348,7 @@ class LiveMatchManager:
                 return None
             q = quarters[q_num - 1]
             if q is None:
-                return None  # that quarter's data wasn't posted (rare) — skip
+                return None
             if alert.side == "Home":
                 return q["home"] > q["away"]
             elif alert.side == "Away":
@@ -413,7 +369,7 @@ class LiveMatchManager:
             if not valid_quarters:
                 return None
             best_q = max(valid_quarters, key=lambda x: x[1])[0]
-            predicted_q = alert.side.replace("Q", "") if alert.side else ""
+            predicted_q = (alert.side or "").replace("Q", "")
             try:
                 return int(predicted_q) == best_q
             except ValueError:
@@ -428,9 +384,9 @@ class LiveMatchManager:
             for p in player_stats:
                 if p["player"].strip().lower() == player_name.strip().lower():
                     return p["points"] > threshold
-            return None  # player not found in final stats — skip
+            return None
 
-        return None  # unknown market_type — never auto-settle blindly
+        return None
 
     def _apply_settlement(self, session, alert, won: bool):
         account = get_or_create_paper_account(session, Config.STARTING_BANKROLL)
