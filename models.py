@@ -2,7 +2,14 @@
 models.py
 SQLAlchemy models. All tables prefixed 'bball_' to safely coexist
 with your existing tennis tables in the same Postgres database.
-Includes safe migration for newly-added columns on existing tables.
+
+UPDATED:
+- ValueBetAlert: added home_team/away_team (display) and
+  market_type/settlement_meta (automatic settlement)
+- RecentAlertKey: database-backed alert deduplication (survives
+  process restarts, unlike an in-memory Python dict)
+- Safe migration step adds new columns to already-existing tables
+  without dropping data
 """
 
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, JSON, text
@@ -26,7 +33,7 @@ class LiveMatchSnapshot(Base):
     current_total = Column(Integer)
     score_diff = Column(Integer)
     minutes_remaining = Column(Float)
-    raw_odds_json = Column(JSON)
+    raw_odds_json = Column(JSON)  # intentionally left unpopulated now (memory optimization)
     polled_at = Column(DateTime, nullable=False)
 
 
@@ -111,6 +118,20 @@ class LiveMatchStatus(Base):
     last_updated = Column(DateTime, nullable=False)
 
 
+class RecentAlertKey(Base):
+    """
+    Database-backed alert deduplication. Replaces the old in-memory
+    Python dict approach — cooldowns now survive process restarts,
+    which matter on low-RAM instances (like Fly.io free tier) where
+    OOM kills can restart the worker frequently.
+    """
+    __tablename__ = "bball_recent_alert_keys"
+
+    id = Column(Integer, primary_key=True)
+    alert_key = Column(String, unique=True, index=True, nullable=False)
+    last_fired_at = Column(DateTime, nullable=False)
+
+
 def get_or_create_paper_account(session, starting_balance: float):
     account = session.query(PaperTradingAccount).first()
     if account is None:
@@ -151,6 +172,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def _run_safe_migrations():
+    """
+    Adds new columns to already-existing tables. Base.metadata.create_all()
+    only creates brand-new tables — it does NOT alter existing ones, so
+    this manual step is required whenever columns are added later.
+    """
     migration_statements = [
         "ALTER TABLE bball_value_bet_alerts ADD COLUMN IF NOT EXISTS home_team VARCHAR",
         "ALTER TABLE bball_value_bet_alerts ADD COLUMN IF NOT EXISTS away_team VARCHAR",
@@ -167,6 +193,9 @@ def _run_safe_migrations():
 
 
 def init_db():
+    """Creates all bball_ tables if they don't exist yet (including the
+    new RecentAlertKey table), then runs safe column migrations for
+    already-existing tables. Safe to call repeatedly on every startup."""
     Base.metadata.create_all(bind=engine)
     _run_safe_migrations()
 
