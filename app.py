@@ -3,6 +3,7 @@ app.py
 Main Flask application: dashboard (live matches + alerts with team
 names), history (auto-settled bets, daily P/L, ROI), and settings
 (API key management, users). Automatic settlement — no manual buttons.
+Includes full_reset endpoint to wipe test/dirty data.
 """
 
 from flask import Flask, render_template, jsonify, request
@@ -269,6 +270,7 @@ def api_users_list():
 
 @app.route("/api/reset_paper_account", methods=["POST"])
 def reset_paper_account():
+    """Resets balance only — keeps alert history intact."""
     session = get_db_session()
     try:
         account = get_or_create_paper_account(session, Config.STARTING_BANKROLL)
@@ -279,6 +281,33 @@ def reset_paper_account():
         account.updated_at = datetime.utcnow()
         session.commit()
         return jsonify({"success": True})
+    finally:
+        session.close()
+
+
+@app.route("/api/full_reset", methods=["POST"])
+def full_reset():
+    """
+    Wipes ALL alert history AND resets balance. Use this to clear out
+    test/manual data before starting a clean, trustworthy tracking period.
+    """
+    session = get_db_session()
+    try:
+        deleted_count = session.query(ValueBetAlert).delete()
+
+        account = get_or_create_paper_account(session, Config.STARTING_BANKROLL)
+        account.current_balance = account.starting_balance
+        account.total_bets_placed = 0
+        account.total_wins = 0
+        account.total_losses = 0
+        account.updated_at = datetime.utcnow()
+
+        session.commit()
+        return jsonify({
+            "success": True,
+            "deleted_alerts": deleted_count,
+            "new_balance": account.current_balance,
+        })
     finally:
         session.close()
 
