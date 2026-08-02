@@ -6,114 +6,53 @@
 <title>📊 History — Live Prediction Engine</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-
   body {
     font-family: 'Segoe UI', sans-serif;
     background: linear-gradient(-45deg, #0f0c29, #302b63, #24243e, #1a1a2e);
-    background-size: 400% 400%;
-    animation: gradientShift 15s ease infinite;
-    color: #f0f0f0;
-    min-height: 100vh;
-    padding: 16px;
-    padding-bottom: 80px;
+    background-size: 400% 400%; animation: gradientShift 15s ease infinite;
+    color: #f0f0f0; min-height: 100vh; padding: 16px; padding-bottom: 80px;
   }
-
-  @keyframes gradientShift {
-    0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; }
-  }
-
+  @keyframes gradientShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
   header { text-align: center; padding: 16px 0; }
   header h1 {
     font-size: 22px;
     background: linear-gradient(90deg, #ff6b6b, #f7b733, #4ecdc4, #556fb5);
-    background-size: 300% 300%;
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-size: 300% 300%; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     animation: textGlow 6s ease infinite;
   }
   @keyframes textGlow { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-
-  .filter-row {
-    display: flex; gap: 8px; justify-content: center; margin: 16px 0; flex-wrap: wrap;
-  }
-  .filter-btn {
-    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
-    color: #c0c0e0; padding: 8px 16px; border-radius: 20px; font-size: 12px;
-    cursor: pointer; transition: all 0.2s;
-  }
-  .filter-btn.active {
-    background: linear-gradient(90deg, #4ecdc4, #556fb5); color: #0f0c29; font-weight: bold;
-    border-color: transparent;
-  }
-
-  .overall-summary {
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 20px; padding: 20px; margin: 16px auto; max-width: 500px;
-    backdrop-filter: blur(10px);
-  }
-
-  .summary-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px;
-  }
+  .filter-row { display: flex; gap: 8px; justify-content: center; margin: 16px 0; flex-wrap: wrap; }
+  .filter-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #c0c0e0; padding: 8px 16px; border-radius: 20px; font-size: 12px; cursor: pointer; }
+  .filter-btn.active { background: linear-gradient(90deg, #4ecdc4, #556fb5); color: #0f0c29; font-weight: bold; border-color: transparent; }
+  .overall-summary { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; padding: 20px; margin: 16px auto; max-width: 500px; backdrop-filter: blur(10px); }
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
   .summary-item { text-align: center; }
   .summary-item .label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #a0a0c0; }
   .summary-item .value { font-size: 20px; font-weight: bold; margin-top: 4px; }
-
-  .val-green { color: #6bff8f; }
-  .val-red { color: #ff6b6b; }
-  .val-yellow { color: #f7b733; }
-  .val-teal { color: #4ecdc4; }
-
-  .section-title {
-    font-size: 15px; font-weight: bold; margin: 20px 0 10px;
-    border-left: 3px solid #4ecdc4; padding-left: 10px;
-  }
-
-  .day-card {
-    background: rgba(255,255,255,0.05);
-    border-radius: 14px; margin-bottom: 12px; overflow: hidden;
-    animation: fadeIn 0.4s ease-out;
-  }
+  .val-green { color: #6bff8f; } .val-red { color: #ff6b6b; } .val-yellow { color: #f7b733; } .val-teal { color: #4ecdc4; }
+  .section-title { font-size: 15px; font-weight: bold; margin: 20px 0 10px; border-left: 3px solid #4ecdc4; padding-left: 10px; }
+  .day-card { background: rgba(255,255,255,0.05); border-radius: 14px; margin-bottom: 12px; overflow: hidden; animation: fadeIn 0.4s ease-out; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-
-  .day-header {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 14px 16px; cursor: pointer;
-  }
+  .day-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; cursor: pointer; }
   .day-header .date { font-weight: bold; font-size: 14px; }
   .day-header .meta { font-size: 11px; color: #a0a0c0; margin-top: 2px; }
   .day-pl { font-size: 16px; font-weight: bold; }
-
-  .day-bets {
-    max-height: 0; overflow: hidden; transition: max-height 0.3s ease;
-    padding: 0 16px;
-  }
-  .day-bets.expanded { max-height: 800px; padding-bottom: 12px; }
-
-  .bet-row {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.08); font-size: 12px;
-  }
+  .day-bets { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; padding: 0 16px; }
+  .day-bets.expanded { max-height: 1200px; padding-bottom: 12px; }
+  .bet-row { display: flex; flex-direction: column; padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.08); font-size: 12px; }
+  .bet-row .bet-teams { font-weight: bold; color: #f0f0f0; }
+  .bet-row .bet-line { display: flex; justify-content: space-between; margin-top: 3px; }
   .bet-row .bet-info { color: #c0c0e0; }
   .bet-row .bet-pl { font-weight: bold; }
-
   .no-data { text-align: center; color: #808090; padding: 40px; font-style: italic; }
-
-  .bottom-nav {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    background: rgba(20,20,35,0.95); backdrop-filter: blur(10px);
-    display: flex; justify-content: space-around; padding: 12px 0;
-    border-top: 1px solid rgba(255,255,255,0.1);
-  }
+  .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(20,20,35,0.95); backdrop-filter: blur(10px); display: flex; justify-content: space-around; padding: 12px 0; border-top: 1px solid rgba(255,255,255,0.1); }
   .bottom-nav a { color: #a0a0c0; text-decoration: none; font-size: 12px; text-align: center; }
   .bottom-nav a.active { color: #4ecdc4; font-weight: bold; }
 </style>
 </head>
 <body>
 
-<header>
-  <h1>📊 HISTORY</h1>
-</header>
+<header><h1>📊 HISTORY</h1></header>
 
 <div class="filter-row">
   <button class="filter-btn" data-days="7">Siku 7</button>
@@ -133,9 +72,7 @@
 </div>
 
 <div class="section-title">Historia ya Kila Siku</div>
-<div id="dailyBreakdown">
-  <div class="no-data">Inapakia...</div>
-</div>
+<div id="dailyBreakdown"><div class="no-data">Inapakia...</div></div>
 
 <nav class="bottom-nav">
   <a href="/">🏠 Dashboard</a>
@@ -145,10 +82,7 @@
 
 <script>
 let currentDays = 30;
-
-function plClass(val) {
-  return val > 0 ? 'val-green' : (val < 0 ? 'val-red' : '');
-}
+function plClass(val) { return val > 0 ? 'val-green' : (val < 0 ? 'val-red' : ''); }
 
 async function loadHistory(days) {
   const res = await fetch(`/api/history_data?days=${days}`);
@@ -179,15 +113,16 @@ async function loadHistory(days) {
           <div class="date">${day.date}</div>
           <div class="meta">${day.n_bets} bets | ${day.wins}W - ${day.losses}L (${day.win_rate}%)</div>
         </div>
-        <div class="day-pl ${plClass(day.profit_loss)}">
-          ${day.profit_loss > 0 ? '+' : ''}$${day.profit_loss.toFixed(2)}
-        </div>
+        <div class="day-pl ${plClass(day.profit_loss)}">${day.profit_loss > 0 ? '+' : ''}$${day.profit_loss.toFixed(2)}</div>
       </div>
       <div class="day-bets" id="day-bets-${idx}">
         ${day.bets.map(b => `
           <div class="bet-row">
-            <div class="bet-info">${b.time} | ${b.market} — ${b.side || ''} @ ${b.odds}</div>
-            <div class="bet-pl ${plClass(b.profit_loss)}">${b.won ? '✓' : '✗'} $${b.profit_loss.toFixed(2)}</div>
+            <div class="bet-teams">${b.home_team} vs ${b.away_team}</div>
+            <div class="bet-line">
+              <div class="bet-info">${b.time} | ${b.market}${b.side ? ' — ' + b.side : ''} @ ${b.odds}</div>
+              <div class="bet-pl ${plClass(b.profit_loss)}">${b.won ? '✓' : '✗'} $${b.profit_loss.toFixed(2)}</div>
+            </div>
           </div>
         `).join('')}
       </div>
@@ -196,8 +131,7 @@ async function loadHistory(days) {
 }
 
 function toggleDay(idx) {
-  const el = document.getElementById(`day-bets-${idx}`);
-  el.classList.toggle('expanded');
+  document.getElementById(`day-bets-${idx}`).classList.toggle('expanded');
 }
 
 document.querySelectorAll('.filter-btn').forEach(btn => {
