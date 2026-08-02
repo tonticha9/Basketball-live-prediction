@@ -1,8 +1,8 @@
 """
 app.py
-Main Flask application: dashboard (live matches + alerts), history
-(settled bets, daily P/L, ROI), and settings (API key management, users).
-Paper trading only — no real money, no Telegram.
+Main Flask application: dashboard (live matches + alerts with team
+names), history (auto-settled bets, daily P/L, ROI), and settings
+(API key management, users). Automatic settlement — no manual buttons.
 """
 
 from flask import Flask, render_template, jsonify, request
@@ -19,25 +19,16 @@ from models import (
 )
 
 app = Flask(__name__)
-
-# Creates bball_ tables if they don't exist yet.
-# Safe to run repeatedly — does not touch or affect existing tennis tables.
 init_db()
 
 
-# =========================================================
-# DASHBOARD — live matches + balance + change
-# =========================================================
 @app.route("/")
 def dashboard():
     session = get_db_session()
     try:
         account = get_or_create_paper_account(session, Config.STARTING_BANKROLL)
-
-        # Overall change since the account started
         overall_change = round(account.current_balance - account.starting_balance, 2)
 
-        # Today's change (sum of profit_loss for bets settled today)
         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         todays_settled = (
             session.query(ValueBetAlert)
@@ -62,10 +53,8 @@ def dashboard():
 
         return render_template(
             "dashboard.html",
-            account=account,
-            overall_change=overall_change,
-            todays_change=todays_change,
-            alerts=recent_alerts,
+            account=account, overall_change=overall_change,
+            todays_change=todays_change, alerts=recent_alerts,
             live_matches=live_matches,
         )
     finally:
@@ -74,7 +63,6 @@ def dashboard():
 
 @app.route("/api/dashboard_data")
 def api_dashboard_data():
-    """Single JSON feed the dashboard polls to auto-refresh everything."""
     session = get_db_session()
     try:
         account = get_or_create_paper_account(session, Config.STARTING_BANKROLL)
@@ -115,7 +103,9 @@ def api_dashboard_data():
             "total_bets": account.total_bets_placed,
             "win_rate": win_rate,
             "alerts": [{
-                "id": a.id, "match_id": a.match_id, "market": a.market, "side": a.side,
+                "id": a.id, "match_id": a.match_id,
+                "home_team": a.home_team or "?", "away_team": a.away_team or "?",
+                "market": a.market, "side": a.side,
                 "probability": a.blended_probability, "odds": a.offered_odds,
                 "edge_pct": a.edge_pct, "stake": a.recommended_stake,
                 "settled_result": a.settled_result, "profit_loss": a.profit_loss,
@@ -133,46 +123,6 @@ def api_dashboard_data():
         session.close()
 
 
-@app.route("/api/settle_bet/<int:alert_id>", methods=["POST"])
-def settle_bet(alert_id):
-    data = request.get_json(silent=True) or {}
-    won = data.get("won", False)
-
-    session = get_db_session()
-    try:
-        alert = session.query(ValueBetAlert).filter_by(id=alert_id).first()
-        if alert is None:
-            return jsonify({"error": "Alert not found"}), 404
-        if alert.settled_result is not None:
-            return jsonify({"error": "Alert already settled"}), 400
-
-        account = get_or_create_paper_account(session, Config.STARTING_BANKROLL)
-
-        profit_loss = (
-            alert.recommended_stake * (alert.offered_odds - 1)
-            if won else -alert.recommended_stake
-        )
-
-        alert.settled_result = won
-        alert.profit_loss = round(profit_loss, 2)
-
-        account.current_balance = round(account.current_balance + profit_loss, 2)
-        account.total_bets_placed += 1
-        if won:
-            account.total_wins += 1
-        else:
-            account.total_losses += 1
-        account.updated_at = datetime.utcnow()
-
-        session.commit()
-        return jsonify({"success": True, "new_balance": account.current_balance})
-    finally:
-        session.close()
-
-
-# =========================================================
-# HISTORY — settled bets, daily P/L breakdown, overall stats
-# =========================================================
 @app.route("/history")
 def history():
     return render_template("history.html")
@@ -180,11 +130,6 @@ def history():
 
 @app.route("/api/history_data")
 def api_history_data():
-    """
-    Returns settled bets grouped by day, with per-day P/L, plus overall
-    totals (ROI, win rate). Optional ?days=N query param limits range
-    (default 30).
-    """
     days_back = int(request.args.get("days", 30))
     cutoff = datetime.utcnow() - timedelta(days=days_back)
 
@@ -200,7 +145,6 @@ def api_history_data():
             .all()
         )
 
-        # Group by day
         daily_groups = defaultdict(list)
         for a in settled:
             day_key = a.fired_at.strftime("%Y-%m-%d")
@@ -214,17 +158,14 @@ def api_history_data():
             day_win_rate = round(day_wins / len(bets) * 100, 1) if bets else 0
 
             daily_summary.append({
-                "date": day_key,
-                "n_bets": len(bets),
-                "wins": day_wins,
-                "losses": len(bets) - day_wins,
-                "win_rate": day_win_rate,
+                "date": day_key, "n_bets": len(bets), "wins": day_wins,
+                "losses": len(bets) - day_wins, "win_rate": day_win_rate,
                 "profit_loss": day_pl,
                 "bets": [{
-                    "id": b.id, "match_id": b.match_id, "market": b.market, "side": b.side,
-                    "odds": b.offered_odds, "stake": b.recommended_stake,
-                    "won": b.settled_result, "profit_loss": b.profit_loss,
-                    "time": b.fired_at.strftime("%H:%M"),
+                    "id": b.id, "home_team": b.home_team or "?", "away_team": b.away_team or "?",
+                    "market": b.market, "side": b.side, "odds": b.offered_odds,
+                    "stake": b.recommended_stake, "won": b.settled_result,
+                    "profit_loss": b.profit_loss, "time": b.fired_at.strftime("%H:%M"),
                 } for b in bets],
             })
 
@@ -237,13 +178,9 @@ def api_history_data():
         return jsonify({
             "daily_summary": daily_summary,
             "overall": {
-                "n_bets": len(settled),
-                "wins": total_wins,
-                "losses": len(settled) - total_wins,
-                "win_rate": overall_win_rate,
-                "total_profit_loss": round(total_pl, 2),
-                "roi_pct": overall_roi,
-                "current_balance": account.current_balance,
+                "n_bets": len(settled), "wins": total_wins, "losses": len(settled) - total_wins,
+                "win_rate": overall_win_rate, "total_profit_loss": round(total_pl, 2),
+                "roi_pct": overall_roi, "current_balance": account.current_balance,
                 "starting_balance": account.starting_balance,
             }
         })
@@ -251,9 +188,6 @@ def api_history_data():
         session.close()
 
 
-# =========================================================
-# SETTINGS — API key management, users
-# =========================================================
 @app.route("/settings")
 def settings_page():
     session = get_db_session()
@@ -283,10 +217,7 @@ def update_api_key():
         settings.is_active = True
         settings.updated_at = datetime.utcnow()
         session.commit()
-        return jsonify({
-            "success": True,
-            "expires_at": settings.expires_at.strftime("%Y-%m-%d %H:%M"),
-        })
+        return jsonify({"success": True, "expires_at": settings.expires_at.strftime("%Y-%m-%d %H:%M")})
     finally:
         session.close()
 
@@ -311,9 +242,7 @@ def api_key_status():
     session = get_db_session()
     try:
         settings = get_or_create_api_key_settings(session)
-        expired = (
-            settings.expires_at is not None and settings.expires_at < datetime.utcnow()
-        )
+        expired = settings.expires_at is not None and settings.expires_at < datetime.utcnow()
         return jsonify({
             "has_key": settings.api_key is not None,
             "is_active": settings.is_active and not expired,
@@ -359,9 +288,6 @@ def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
 
 
-# =========================================================
-# SCHEDULER BOOTSTRAP
-# =========================================================
 from scheduler import create_scheduler
 scheduler = create_scheduler()
 
