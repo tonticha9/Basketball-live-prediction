@@ -1,19 +1,24 @@
 """
 scheduler.py
-Polling loop with automatic settlement AND database-backed alert
-deduplication (survives process restarts, unlike in-memory dicts).
-Also drops the heavy raw_odds_json snapshot to reduce memory pressure
-on low-RAM instances.
+Polling loop with automatic settlement AND permanent alert deduplication.
+
+FIXED: Alert deduplication is now "once per match+market+side, forever"
+instead of a rolling 5-minute cooldown. The old cooldown approach caused
+the same signal to re-fire repeatedly (7+ times in a single match) every
+time the edge crossed the threshold again as live probability fluctuated.
+Now it checks the database directly: if an alert for this exact
+match+market+side combination already exists, it never fires again for
+that match — regardless of how many poll cycles pass.
 """
 
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from config import Config
 from models import (
     get_db_session, LiveMatchSnapshot, ValueBetAlert, LiveMatchStatus,
-    RecentAlertKey, get_or_create_paper_account, get_or_create_api_key_settings,
+    get_or_create_paper_account, get_or_create_api_key_settings,
 )
 from parsers import (
     AllSportsLivescoreParser, AllSportsOddsParser,
@@ -66,28 +71,20 @@ class LiveMatchManager:
             print(f"[_fetch] API returned success=0.")
         return data
 
-    def _should_fire_alert(self, session, match_id, market, side, cooldown_seconds=300) -> bool:
+    def _should_fire_alert(self, session, match_id, market, side) -> bool:
         """
-        Database-backed deduplication. Survives process restarts since
-        it's stored in Postgres, not Python memory.
+        Fires an alert for a given match+market+side combination ONLY
+        ONCE per match — not on a rolling time-based cooldown. Once
+        fired, that exact combination never re-alerts again for this
+        match, no matter how many poll cycles pass or how many times
+        the edge crosses the threshold again during the remaining game.
         """
-        key = f"{match_id}:{market}:{side}"
-        now = datetime.utcnow()
-
-        existing = session.query(RecentAlertKey).filter_by(alert_key=key).first()
-        if existing:
-            if (now - existing.last_fired_at).total_seconds() < cooldown_seconds:
-                return False
-            existing.last_fired_at = now
-        else:
-            session.add(RecentAlertKey(alert_key=key, last_fired_at=now))
-
-        return True
-
-    def _cleanup_old_dedup_keys(self, session, max_age_hours=6):
-        """Prevents the dedup table from growing unbounded over time."""
-        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
-        session.query(RecentAlertKey).filter(RecentAlertKey.last_fired_at < cutoff).delete()
+        existing = (
+            session.query(ValueBetAlert)
+            .filter_by(match_id=match_id, market=market, side=side)
+            .first()
+        )
+        return existing is None
 
     def poll_cycle(self):
         print(f"[heartbeat] Poll cycle running at {datetime.utcnow().isoformat()}")
@@ -144,8 +141,6 @@ class LiveMatchManager:
         now = datetime.utcnow()
         cache_time = self._standings_cache_time.get(league_key)
 
-        # Refresh standings at most once per hour per league (reduces both
-        # API calls and memory churn from repeatedly storing large payloads)
         if league_key not in self._standings_cache or (cache_time and (now - cache_time).total_seconds() > 3600):
             try:
                 self._standings_cache[league_key] = self._fetch(
@@ -190,9 +185,6 @@ class LiveMatchManager:
             status_row.last_updated = datetime.utcnow()
             has_alert_this_cycle = False
 
-            # NOTE: raw_odds_json intentionally NOT stored here anymore —
-            # the full odds payload (hundreds of bookmaker entries) was a
-            # major source of memory pressure on the low-RAM instance.
             snapshot = LiveMatchSnapshot(
                 match_id=match_id, league_name=match_state.get("league_name"),
                 home_team=home_team, away_team=away_team,
@@ -283,7 +275,6 @@ class LiveMatchManager:
                     has_alert_this_cycle = True
 
             status_row.has_active_alert = has_alert_this_cycle
-            self._cleanup_old_dedup_keys(session)
             session.commit()
 
         finally:
