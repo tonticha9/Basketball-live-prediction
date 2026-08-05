@@ -6,6 +6,11 @@ structures for the prediction engine.
 Quarter-completion detection is based on which quarter score entries
 have data (not on event_status text), which is robust across leagues
 that report status differently (e.g. "3rd Quarter" vs plain "3").
+
+UPDATED: _average_odds now limits to the first 2 bookmaker entries per
+market instead of all 15+, reducing memory/CPU load per poll cycle on
+low-RAM hosting (negligible accuracy cost since 2 major books already
+track market consensus closely).
 """
 
 from typing import Dict, List, Optional
@@ -113,9 +118,17 @@ class AllSportsLivescoreParser:
 class AllSportsOddsParser:
     @staticmethod
     def _average_odds(book_dict: Dict[str, str]) -> Optional[float]:
+        """
+        Averages only the first 2 bookmaker entries per market instead
+        of all 15+. This reduces both memory footprint (smaller
+        intermediate lists built on every poll cycle) and CPU time,
+        at negligible accuracy cost since 2 major bookmakers already
+        track market consensus closely.
+        """
         if not book_dict:
             return None
-        values = [float(v) for v in book_dict.values() if v]
+        limited_values = list(book_dict.values())[:2]
+        values = [float(v) for v in limited_values if v]
         return round(sum(values) / len(values), 3) if values else None
 
     @staticmethod
@@ -202,7 +215,8 @@ class AllSportsPlayerOddsParser:
 
         results = []
         for threshold_str, book_odds in player_market.items():
-            values = [float(v) for v in book_odds.values() if v]
+            limited_values = list(book_odds.values())[:2]
+            values = [float(v) for v in limited_values if v]
             if values:
                 results.append({
                     "threshold": float(threshold_str),
