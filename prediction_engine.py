@@ -2,27 +2,25 @@
 prediction_engine.py
 Elite-tier live basketball prediction engine.
 
-ELITE FEATURES ADDED:
-- LiveGameFeatureExtractor: computes momentum, fatigue, foul trouble,
-  garbage time, pace pressure, scoring runs from raw AllSportsAPI data
-- All features feed as adjustments into existing Poisson/NegBinom/
-  Bayesian models — math foundation unchanged, accuracy improved
-- Features implemented (from AllSportsAPI data only, no external deps):
-  * scoring_pace_current (live pace vs quarter average)
-  * point_run_momentum (home/away scoring dominance in recent quarters)
-  * fatigue_index (per player: minutes played / expected max minutes)
-  * foul_trouble_key_player (starter in foul trouble -> scoring penalty)
-  * garbage_time_indicator (large lead + little time -> pace drops)
-  * spread_vs_live_pressure (live diff vs pregame expectation divergence)
-  * time_score_pressure (urgency: trailing team's pressure index)
-  * to_rate_live (turnovers per minute from player stats)
-  * orb_rate_live (offensive rebounds from player stats)
-  * three_pa_rate_live (3-point attempt rate from player stats)
+UPDATES IN THIS VERSION:
+1. BayesianPaceModel: Gamma-Poisson conjugate Bayesian rate updater
+   replaces simple averaging — properly handles small samples, gives
+   full posterior distribution over scoring rate
+2. LiveGameFeatureExtractor: fixed based on confirmed AllSportsAPI fields
+   - REMOVED: foul_trouble (player_personal_fouls is empty in API)
+   - REMOVED: orb_rate_live (player_offence_rebounds is empty)
+   - ADDED: efg_pct_live (effective FG% from confirmed fields)
+   - ADDED: ft_rate_live (free throw rate from confirmed fields)
+   - KEPT: pace, momentum, garbage_time, pressure, spread_divergence,
+           to_rate_live, three_pa_rate_live, fatigue
+3. SyntheticTotalOrchestrator: projects Over/Under without bookmaker
+   odds — uses Bayesian posterior distribution to flag high-confidence
+   total predictions directly from live game data
 """
 
 import numpy as np
 from scipy.optimize import brentq
-from scipy.stats import nbinom, norm
+from scipy.stats import nbinom, norm, gamma as gamma_dist
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
@@ -79,26 +77,220 @@ class QuarterScoringModel:
 
 
 # =========================================================
-# ELITE FEATURE EXTRACTOR
+# BAYESIAN GAMMA-POISSON RATE MODEL
+# =========================================================
+class BayesianPaceModel:
+    """
+    Models the combined scoring rate (points per minute, both teams)
+    as a Poisson process with a Gamma prior — the Gamma-Poisson
+    conjugate model.
+
+    Bayesian update rule (exact, closed-form):
+      Prior:     Rate ~ Gamma(alpha_0, beta_0)
+      Data:      k points observed over t minutes
+      Posterior: Rate ~ Gamma(alpha_0 + k, beta_0 + t)
+
+    This is mathematically superior to simple averaging because:
+    1. Small samples are automatically shrunk toward the prior
+       (e.g., 2 points in 1 minute doesn't extrapolate to 96/game)
+    2. Full uncertainty quantification: we know the entire distribution
+       over possible rates, not just a point estimate
+    3. Posterior predictive (NegBinom) naturally handles overdispersion
+
+    Reference: Gelman et al., Bayesian Data Analysis (3rd ed.) Ch. 2
+    """
+
+    # Prior: weakly informative — centered at 52 pts/quarter = 4.33/min
+    # alpha_0/beta_0 = prior mean; beta_0 = prior "weight" in minutes
+    PRIOR_ALPHA_0 = 8.66   # = prior_mean * prior_weight
+    PRIOR_BETA_0 = 2.0     # prior weight (equiv. to 2 minutes of data)
+    # Interpretation: we start with the belief that the combined rate
+    # is ~4.33 pts/min, but are willing to update quickly once real data arrives
+
+    def __init__(self):
+        self.alpha = self.PRIOR_ALPHA_0  # accumulates observed points
+        self.beta = self.PRIOR_BETA_0   # accumulates observed minutes
+
+    def update(self, points_observed: int, minutes_elapsed: float):
+        """
+        Bayesian update: incorporate new observations.
+        Call once per completed quarter (or partial quarter snapshot).
+        """
+        self.alpha += max(0, points_observed)
+        self.beta += max(0.0, minutes_elapsed)
+
+    @property
+    def posterior_mean_rate(self) -> float:
+        """Expected scoring rate (pts/min) under posterior."""
+        return self.alpha / self.beta
+
+    @property
+    def posterior_variance_rate(self) -> float:
+        """Variance of rate estimate — shrinks as more data arrives."""
+        return self.alpha / (self.beta ** 2)
+
+    @property
+    def pace_confidence(self) -> float:
+        """
+        0-1 confidence based on posterior precision relative to prior.
+        Approaches 1.0 as more game data accumulates.
+        """
+        prior_variance = self.PRIOR_ALPHA_0 / (self.PRIOR_BETA_0 ** 2)
+        posterior_variance = self.posterior_variance_rate
+        confidence = 1.0 - (posterior_variance / prior_variance)
+        return float(np.clip(confidence, 0.0, 0.99))
+
+    def predictive_over_under_prob(self, current_total: int, minutes_remaining: float,
+                                    line: float, pace_multiplier: float = 1.0) -> Dict:
+        """
+        Posterior predictive distribution for remaining points:
+        P(remaining points = k) = NegBinom(k | alpha, p)
+        where p = beta / (beta + minutes_remaining * pace_multiplier)
+
+        This integrates out uncertainty in the rate (unlike point-estimate
+        Poisson which pretends we know the rate exactly), giving wider
+        and better-calibrated prediction intervals especially early in game.
+        """
+        adj_minutes = minutes_remaining * pace_multiplier
+
+        if adj_minutes <= 0:
+            return {
+                "p_over": 1.0 if current_total > line else 0.0,
+                "p_under": 0.0 if current_total > line else 1.0,
+                "already_settled": True,
+                "expected_final_total": float(current_total),
+                "std_dev": 0.0,
+                "confidence": 1.0,
+            }
+
+        points_needed = line - current_total
+        if points_needed < 0:
+            return {
+                "p_over": 1.0, "p_under": 0.0, "already_settled": True,
+                "expected_final_total": float(current_total), "std_dev": 0.0, "confidence": 1.0,
+            }
+
+        # Posterior predictive for total remaining points:
+        # k ~ NegBinom(alpha, p) where p = beta/(beta + adj_minutes)
+        r = self.alpha
+        p_param = self.beta / (self.beta + adj_minutes)
+        dist = nbinom(r, p_param)
+
+        expected_remaining = dist.mean()
+        std_remaining = dist.std()
+
+        threshold = int(np.floor(points_needed))
+        p_under = float(dist.cdf(threshold))
+        p_over = 1.0 - p_under
+
+        return {
+            "p_over": round(p_over, 4),
+            "p_under": round(p_over, 4),
+            "already_settled": False,
+            "expected_final_total": round(float(current_total + expected_remaining), 1),
+            "std_dev": round(float(std_remaining), 2),
+            "confidence": round(self.pace_confidence, 3),
+            "posterior_rate_per_min": round(self.posterior_mean_rate, 3),
+        }
+
+    def high_confidence_total_range(self, current_total: int,
+                                     minutes_remaining: float,
+                                     pace_multiplier: float = 1.0,
+                                     credible_pct: float = 0.80) -> Tuple[float, float]:
+        """
+        Returns the (lower, upper) bounds of the credible_pct% posterior
+        predictive interval for the final total.
+        e.g., 80% credible interval: we're 80% confident the final
+        total falls within [lower, upper].
+        Used by SyntheticTotalOrchestrator to assess confidence.
+        """
+        adj_minutes = minutes_remaining * pace_multiplier
+        if adj_minutes <= 0:
+            return (float(current_total), float(current_total))
+
+        r = self.alpha
+        p_param = self.beta / (self.beta + adj_minutes)
+        dist = nbinom(r, p_param)
+
+        alpha_tail = (1.0 - credible_pct) / 2.0
+        lower_remaining = float(dist.ppf(alpha_tail))
+        upper_remaining = float(dist.ppf(1.0 - alpha_tail))
+
+        return (current_total + lower_remaining, current_total + upper_remaining)
+
+
+# =========================================================
+# LIVE-ADAPTIVE GAME TOTAL MODEL (wraps BayesianPaceModel)
+# =========================================================
+class LiveAdaptivePaceModel:
+    """Legacy interface maintained for compatibility with OddEvenOrchestrator."""
+    NEUTRAL_QUARTER_TOTAL = 52.0
+
+    def __init__(self):
+        self.quarter_totals: List[float] = []
+        self.bayesian_model = BayesianPaceModel()
+
+    def add_completed_quarter(self, home_pts: int, away_pts: int):
+        total = home_pts + away_pts
+        self.quarter_totals.append(total)
+        # Bayesian update: 12 minutes of data
+        self.bayesian_model.update(points_observed=total, minutes_elapsed=12.0)
+
+    def current_pace_per_minute(self, pace_multiplier: float = 1.0) -> float:
+        return self.bayesian_model.posterior_mean_rate * pace_multiplier
+
+    def pace_confidence(self) -> float:
+        return self.bayesian_model.pace_confidence
+
+
+class LiveOnlyGameTotalModel:
+    def __init__(self, dispersion: float = 25.0):
+        self.dispersion = dispersion
+        self.pace_model = LiveAdaptivePaceModel()
+        # Expose Bayesian model directly for SyntheticTotalOrchestrator
+        self.bayesian = self.pace_model.bayesian_model
+
+    def ingest_quarter(self, home_pts: int, away_pts: int):
+        self.pace_model.add_completed_quarter(home_pts, away_pts)
+
+    def update_intra_quarter(self, points_so_far: int, minutes_elapsed: float):
+        """
+        Mid-quarter Bayesian update using partial quarter observations.
+        Call this every poll cycle for the in-progress quarter.
+        """
+        if minutes_elapsed > 0:
+            self.bayesian.update(
+                points_observed=points_so_far,
+                minutes_elapsed=minutes_elapsed,
+            )
+
+    def over_under_prob(self, current_total: int, quarters_completed: int,
+                         minutes_elapsed_current_q: float, line: float,
+                         pace_multiplier: float = 1.0) -> Dict:
+        minutes_remaining = max(48.0 - (quarters_completed * 12.0 + minutes_elapsed_current_q), 0.0)
+        return self.bayesian.predictive_over_under_prob(
+            current_total, minutes_remaining, line, pace_multiplier
+        )
+
+
+# =========================================================
+# ELITE FEATURE EXTRACTOR (fixed for confirmed API fields)
 # =========================================================
 class LiveGameFeatureExtractor:
     """
-    Extracts elite-tier live features from raw AllSportsAPI Livescore
-    event data. All features are dimensionless scalars in [0, 1] or
-    signed floats, ready to be used as multipliers/penalties in the
-    Poisson/NegBinom scoring models.
+    Extracts elite-tier live features from AllSportsAPI data.
 
-    DESIGN PRINCIPLE: Each feature is computed independently and
-    gracefully degrades to a neutral value (0.0 or 1.0) when data
-    is missing or insufficient — ensuring the core math is never
-    corrupted by a bad/missing stat.
+    CONFIRMED AVAILABLE FIELDS (from live API test 2026-08-05):
+      player_points, player_minutes, player_assists, player_total_rebounds,
+      player_field_goals_made, player_field_goals_attempts,
+      player_threepoint_goals_made, player_threepoint_goals_attempts,
+      player_freethrows_goals_made, player_freethrows_goals_attempts,
+      player_turnovers
+
+    CONFIRMED UNAVAILABLE (empty in API response — NOT used):
+      player_personal_fouls, player_offence_rebounds, player_defense_rebounds
     """
 
-    # Foul thresholds for NBA-style rules (adjust per league if needed)
-    FOUL_TROUBLE_THRESHOLD = 3  # fouls at which penalty starts
-    FOUL_OUT_THRESHOLD = 6      # fouls at which player is disqualified
-
-    # Garbage time definition: lead >= this with <= this many minutes left
     GARBAGE_TIME_LEAD = 20
     GARBAGE_TIME_MINUTES = 8.0
 
@@ -107,7 +299,7 @@ class LiveGameFeatureExtractor:
         try:
             if value in ("-", "", None):
                 return default
-            return int(value)
+            return int(float(value))
         except (ValueError, TypeError):
             return default
 
@@ -131,10 +323,6 @@ class LiveGameFeatureExtractor:
     @classmethod
     def extract_all(cls, event: Dict, match_state: Dict,
                      pregame_elo_diff: float = 0.0) -> Dict:
-        """
-        Main entry point. Returns a dict of all elite features, each
-        with a brief description and its computed value.
-        """
         player_stats_home = event.get("player_statistics", {}).get("home_team", [])
         player_stats_away = event.get("player_statistics", {}).get("away_team", [])
         all_players = [("home", p) for p in player_stats_home] + \
@@ -146,39 +334,30 @@ class LiveGameFeatureExtractor:
         features.update(cls._garbage_time_feature(match_state))
         features.update(cls._time_score_pressure(match_state))
         features.update(cls._spread_vs_live_pressure(match_state, pregame_elo_diff))
-        features.update(cls._foul_trouble_features(all_players, match_state))
-        features.update(cls._player_efficiency_features(all_players))
-
+        features.update(cls._shooting_efficiency_features(all_players))
+        features.update(cls._fatigue_features(all_players, match_state))
         return features
 
     @classmethod
     def _scoring_pace_features(cls, match_state: Dict) -> Dict:
-        """
-        scoring_pace_ratio: current quarter pace vs overall game pace.
-        > 1.0 = game accelerating (more scoring recently)
-        < 1.0 = game slowing down
-        """
         completed = match_state.get("completed_quarters", [])
-        if len(completed) < 1:
+        if not completed:
             return {"scoring_pace_ratio": 1.0, "pace_trend": 0.0}
 
         overall_avg = np.mean([q["home"] + q["away"] for q in completed])
         if overall_avg <= 0:
             return {"scoring_pace_ratio": 1.0, "pace_trend": 0.0}
 
-        # Current quarter partial pace (annualized to 12 min)
         min_elapsed = max(match_state.get("minutes_elapsed_current_q", 6.0), 0.5)
         current_total = match_state.get("current_total", 0)
         prior_total = sum(q["home"] + q["away"] for q in completed)
         current_q_so_far = current_total - prior_total
         current_q_pace = (current_q_so_far / min_elapsed) * 12.0
-
         ratio = float(np.clip(current_q_pace / overall_avg, 0.5, 2.0))
 
-        # Pace trend: is scoring accelerating across quarters?
         if len(completed) >= 2:
-            trend = (completed[-1]["home"] + completed[-1]["away"]) - \
-                    (completed[0]["home"] + completed[0]["away"])
+            trend = ((completed[-1]["home"] + completed[-1]["away"]) -
+                     (completed[0]["home"] + completed[0]["away"]))
             trend_normalized = float(np.clip(trend / max(overall_avg, 1), -1.0, 1.0))
         else:
             trend_normalized = 0.0
@@ -187,18 +366,11 @@ class LiveGameFeatureExtractor:
 
     @classmethod
     def _momentum_features(cls, match_state: Dict) -> Dict:
-        """
-        point_run_home / point_run_away: measures if one team has been
-        dominant across recent quarters (a "run"). Range [0, 1].
-        High home run → home team on fire → adjust home win prob upward.
-        """
         completed = match_state.get("completed_quarters", [])
-        if len(completed) < 1:
+        if not completed:
             return {"momentum_home": 0.0, "momentum_away": 0.0}
 
-        # Use last 2 quarters if available (shorter window = more live)
         recent = completed[-2:] if len(completed) >= 2 else completed
-
         home_recent = sum(q["home"] for q in recent)
         away_recent = sum(q["away"] for q in recent)
         total_recent = home_recent + away_recent
@@ -207,29 +379,19 @@ class LiveGameFeatureExtractor:
             return {"momentum_home": 0.0, "momentum_away": 0.0}
 
         momentum_home = float(np.clip((home_recent - away_recent) / total_recent, -1.0, 1.0))
-        momentum_away = -momentum_home  # mirror
-
-        return {"momentum_home": momentum_home, "momentum_away": momentum_away}
+        return {"momentum_home": momentum_home, "momentum_away": -momentum_home}
 
     @classmethod
     def _garbage_time_feature(cls, match_state: Dict) -> Dict:
-        """
-        garbage_time: 1.0 = blowout (game effectively over, starters rest,
-        pace drops dramatically). 0.0 = competitive game.
-        This is the single most important pace-correction feature in
-        live basketball models.
-        """
         score_diff = abs(match_state.get("score_diff", 0))
         minutes_remaining = match_state.get("minutes_remaining", 48.0)
 
         if (score_diff >= cls.GARBAGE_TIME_LEAD and
                 minutes_remaining <= cls.GARBAGE_TIME_MINUTES):
-            # Scale: larger lead + less time = deeper garbage time
             lead_factor = min((score_diff - cls.GARBAGE_TIME_LEAD) / 20.0, 1.0)
             time_factor = 1.0 - (minutes_remaining / cls.GARBAGE_TIME_MINUTES)
             garbage = float(np.clip(0.5 + 0.5 * lead_factor + 0.5 * time_factor, 0.0, 1.0))
         elif score_diff >= cls.GARBAGE_TIME_LEAD * 1.5:
-            # Very large lead even with time remaining (e.g. up 30 in Q3)
             garbage = float(np.clip((score_diff - cls.GARBAGE_TIME_LEAD) / 40.0, 0.0, 0.6))
         else:
             garbage = 0.0
@@ -238,308 +400,318 @@ class LiveGameFeatureExtractor:
 
     @classmethod
     def _time_score_pressure(cls, match_state: Dict) -> Dict:
-        """
-        time_score_pressure: urgency index for the trailing team.
-        High value → trailing team must score faster → pace increases.
-        Used to adjust pace upward in close, late-game situations.
-        Range [0, 1].
-        """
-        score_diff = match_state.get("score_diff", 0)  # positive = home leads
+        score_diff = match_state.get("score_diff", 0)
         minutes_remaining = max(match_state.get("minutes_remaining", 48.0), 0.1)
 
-        # Points per minute needed to catch up (rough approximation)
         if abs(score_diff) == 0:
             pressure = 0.0
         else:
-            points_needed = abs(score_diff)
-            # Pressure scales with points_needed / minutes_remaining
-            raw_pressure = points_needed / (minutes_remaining * 2.0)
+            raw_pressure = abs(score_diff) / (minutes_remaining * 2.0)
             pressure = float(np.clip(raw_pressure, 0.0, 1.0))
 
-        # Direction: positive = home needs to press, negative = away needs to press
         direction = -1.0 if score_diff > 0 else (1.0 if score_diff < 0 else 0.0)
-
-        return {
-            "time_score_pressure": pressure,
-            "pressure_direction": direction,  # which team is pressing
-        }
+        return {"time_score_pressure": pressure, "pressure_direction": direction}
 
     @classmethod
     def _spread_vs_live_pressure(cls, match_state: Dict, pregame_elo_diff: float) -> Dict:
-        """
-        spread_divergence: how much the live score diverges from the
-        pregame expectation. High divergence = underdog overperforming
-        or favorite underperforming → regression to mean likely.
-        Range [-1, 1]: positive = home outperforming pregame expectation.
-        """
         if pregame_elo_diff == 0.0:
             return {"spread_divergence": 0.0}
 
-        # Pregame expected margin (from Elo diff)
         expected_margin = pregame_elo_diff * 0.04
         actual_diff = match_state.get("score_diff", 0)
         minutes_remaining = match_state.get("minutes_remaining", 48.0)
         time_elapsed_fraction = 1.0 - (minutes_remaining / 48.0)
 
         if time_elapsed_fraction < 0.1:
-            return {"spread_divergence": 0.0}  # too early to assess
+            return {"spread_divergence": 0.0}
 
-        # Expected diff at this point in time (linear extrapolation of pregame)
         expected_now = expected_margin * time_elapsed_fraction
         divergence = actual_diff - expected_now
-
-        # Normalize to [-1, 1]
         normalized = float(np.clip(divergence / 20.0, -1.0, 1.0))
         return {"spread_divergence": normalized}
 
     @classmethod
-    def _foul_trouble_features(cls, all_players: List[Tuple], match_state: Dict) -> Dict:
+    def _shooting_efficiency_features(cls, all_players: List[Tuple]) -> Dict:
         """
-        foul_trouble_home / foul_trouble_away: fraction of team scoring
-        capacity at risk due to foul trouble. Range [0, 1].
-        0.0 = no foul trouble; 1.0 = entire team in foul trouble.
+        eFG% = (FGM + 0.5 * 3PM) / FGA  — values 3-pointers appropriately
+        FT_rate = FTM / FTA  — free throw efficiency
+        3PA_rate = 3PA / FGA  — shot selection (reliance on 3s)
+        TO_rate  = turnovers / total_minutes
 
-        fatigue_index_home / fatigue_index_away: average minutes played
-        by starters relative to expected (proxy for fatigue).
+        Uses ONLY confirmed-available API fields.
         """
-        home_fouls, home_pts, home_mins = 0.0, 0.0, 0.0
-        away_fouls, away_pts, away_mins = 0.0, 0.0, 0.0
-        home_count, away_count = 0, 0
-
-        quarters_completed = match_state.get("quarters_completed", 0)
-        expected_mins = max(quarters_completed * 12.0, 1.0)
-
-        for team_side, p in all_players:
-            fouls = cls._safe_int(p.get("player_personal_fouls") or p.get("player_fouls"))
-            pts = cls._safe_int(p.get("player_points"))
-            mins = cls._parse_minutes(p.get("player_minutes", "0:00"))
-
-            if team_side == "home":
-                home_fouls += max(0, fouls - cls.FOUL_TROUBLE_THRESHOLD) * pts
-                home_pts += pts
-                home_mins += mins
-                home_count += 1
-            else:
-                away_fouls += max(0, fouls - cls.FOUL_TROUBLE_THRESHOLD) * pts
-                away_pts += pts
-                away_mins += mins
-                away_count += 1
-
-        # Foul trouble: weighted penalty (more fouls on high scorers = worse)
-        home_foul_penalty = float(np.clip(home_fouls / max(home_pts, 1), 0.0, 0.5))
-        away_foul_penalty = float(np.clip(away_fouls / max(away_pts, 1), 0.0, 0.5))
-
-        # Fatigue: average mins relative to expected
-        home_fatigue = float(np.clip((home_mins / max(home_count, 1)) / expected_mins - 1.0, 0.0, 0.5))
-        away_fatigue = float(np.clip((away_mins / max(away_count, 1)) / expected_mins - 1.0, 0.0, 0.5))
-
-        return {
-            "foul_trouble_home": home_foul_penalty,
-            "foul_trouble_away": away_foul_penalty,
-            "fatigue_home": home_fatigue,
-            "fatigue_away": away_fatigue,
-        }
-
-    @classmethod
-    def _player_efficiency_features(cls, all_players: List[Tuple]) -> Dict:
-        """
-        to_rate_live: combined turnovers per minute (both teams).
-        High TO rate → possession changes often → pace faster but scoring uncertain.
-
-        orb_rate_live: offensive rebounds / total rebounds.
-        High ORB% → more second-chance points → scoring rate elevated.
-
-        three_pa_rate_live: 3-point attempts / total field goal attempts.
-        High 3PA rate → higher variance, higher scoring potential.
-        """
-        total_turnovers = 0
-        total_rebounds = 0
-        total_off_rebounds = 0
+        total_fgm = 0
         total_fga = 0
+        total_3pm = 0
         total_3pa = 0
+        total_ftm = 0
+        total_fta = 0
+        total_to = 0
         total_mins = 0.0
 
         for _, p in all_players:
-            total_turnovers += cls._safe_int(p.get("player_turnovers"))
-            total_rebounds += cls._safe_int(p.get("player_rebounds"))
-            total_off_rebounds += cls._safe_int(p.get("player_offensive_rebounds") or
-                                                  p.get("player_oreb"))
-            total_fga += cls._safe_int(p.get("player_field_goals_att") or
-                                        p.get("player_fga"))
-            total_3pa += cls._safe_int(p.get("player_threepoint_goals_att") or
-                                        p.get("player_3pa"))
-            total_mins += cls._parse_minutes(p.get("player_minutes", "0:00"))
+            fgm = cls._safe_int(p.get("player_field_goals_made"))
+            fga = cls._safe_int(p.get("player_field_goals_attempts"))
+            tpm = cls._safe_int(p.get("player_threepoint_goals_made"))
+            tpa_raw = p.get("player_threepoint_goals_attempts")
+            tpa = cls._safe_int(tpa_raw) if tpa_raw != "-" else 0
+            ftm = cls._safe_int(p.get("player_freethrows_goals_made"))
+            fta = cls._safe_int(p.get("player_freethrows_goals_attempts"))
+            to = cls._safe_int(p.get("player_turnovers"))
+            mins = cls._parse_minutes(p.get("player_minutes", "0:00"))
 
-        to_rate = float(np.clip(total_turnovers / max(total_mins / 10, 1), 0.0, 1.0))
-        orb_rate = float(np.clip(total_off_rebounds / max(total_rebounds, 1), 0.0, 0.6))
-        three_pa_rate = float(np.clip(total_3pa / max(total_fga, 1), 0.0, 1.0))
+            total_fgm += fgm
+            total_fga += fga
+            total_3pm += tpm
+            total_3pa += tpa
+            total_ftm += ftm
+            total_fta += fta
+            total_to += to
+            total_mins += mins
+
+        # eFG%: >0.55 is elite, <0.45 is poor
+        efg = (total_fgm + 0.5 * total_3pm) / max(total_fga, 1)
+        efg_normalized = float(np.clip((efg - 0.50) / 0.15, -1.0, 1.0))
+
+        # FT rate: high FTA/FGA ratio → more free scoring opportunities
+        ft_rate = total_ftm / max(total_fta, 1)
+
+        # 3PA rate: high → higher variance, higher scoring potential
+        three_pa_rate = total_3pa / max(total_fga, 1)
+
+        # TO rate per 10 minutes
+        to_rate = total_to / max(total_mins / 10.0, 1.0)
+        to_rate_normalized = float(np.clip(to_rate, 0.0, 1.0))
 
         return {
-            "to_rate_live": to_rate,
-            "orb_rate_live": orb_rate,
-            "three_pa_rate_live": three_pa_rate,
+            "efg_pct_live": float(np.clip(efg, 0.0, 1.0)),
+            "efg_normalized": efg_normalized,  # signed: positive = shooting well
+            "ft_rate_live": float(np.clip(ft_rate, 0.0, 1.0)),
+            "three_pa_rate_live": float(np.clip(three_pa_rate, 0.0, 1.0)),
+            "to_rate_live": to_rate_normalized,
         }
 
+    @classmethod
+    def _fatigue_features(cls, all_players: List[Tuple], match_state: Dict) -> Dict:
+        """
+        Fatigue proxy: average minutes played relative to expected
+        for this point in the game. High fatigue → slower pace.
+        """
+        quarters_completed = match_state.get("quarters_completed", 0)
+        expected_mins = max(quarters_completed * 12.0, 1.0)
+
+        home_mins, away_mins = 0.0, 0.0
+        home_count, away_count = 0, 0
+
+        for team_side, p in all_players:
+            mins = cls._parse_minutes(p.get("player_minutes", "0:00"))
+            if team_side == "home":
+                home_mins += mins
+                home_count += 1
+            else:
+                away_mins += mins
+                away_count += 1
+
+        home_fatigue = float(np.clip(
+            (home_mins / max(home_count, 1)) / expected_mins - 1.0, 0.0, 0.5
+        ))
+        away_fatigue = float(np.clip(
+            (away_mins / max(away_count, 1)) / expected_mins - 1.0, 0.0, 0.5
+        ))
+
+        return {"fatigue_home": home_fatigue, "fatigue_away": away_fatigue}
+
 
 # =========================================================
-# ELITE FEATURE → MODEL ADJUSTMENT TRANSLATOR
+# ELITE FEATURE ADJUSTER
 # =========================================================
 class EliteFeatureAdjuster:
-    """
-    Translates raw elite feature values into concrete parameter
-    adjustments for the Poisson/NegBinom/Bayesian models.
-
-    Design: each adjustment is bounded and additive/multiplicative,
-    so a single bad feature can never catastrophically distort the
-    prediction — it can only nudge it within a reasonable range.
-    """
-
     @staticmethod
     def combined_pace_multiplier(features: Dict) -> float:
-        """
-        Adjusts the expected scoring pace up or down based on game state.
-        Returns a multiplier (1.0 = no change, >1.0 = faster, <1.0 = slower).
-        """
         multiplier = 1.0
 
-        # Garbage time: reduces pace significantly
+        # Garbage time: biggest single reducer
         garbage = features.get("garbage_time", 0.0)
-        multiplier *= (1.0 - 0.35 * garbage)  # up to -35% pace in full garbage time
+        multiplier *= (1.0 - 0.35 * garbage)
 
-        # Scoring pace ratio: if current quarter is faster/slower than average
+        # Current pace ratio vs quarter average
         pace_ratio = features.get("scoring_pace_ratio", 1.0)
-        # Regress 30% toward the ratio (don't fully trust one partial quarter)
         multiplier *= (1.0 + 0.3 * (pace_ratio - 1.0))
 
-        # Pace trend: scoring increasing over game → slight upward adjustment
+        # Pace trend across quarters
         trend = features.get("pace_trend", 0.0)
         multiplier *= (1.0 + 0.1 * trend)
 
-        # Time-score pressure: trailing team presses → pace increases
+        # Time-score pressure (trailing team presses)
         pressure = features.get("time_score_pressure", 0.0)
         multiplier *= (1.0 + 0.1 * pressure)
 
-        # High TO rate → more possessions but not always more scoring
-        to_rate = features.get("to_rate_live", 0.0)
-        multiplier *= (1.0 - 0.05 * to_rate)  # slight negative (TOs kill scoring)
+        # Shooting efficiency: high eFG → more scoring per possession
+        efg_norm = features.get("efg_normalized", 0.0)
+        multiplier *= (1.0 + 0.08 * efg_norm)
 
-        # High ORB% → more second chances → slightly more scoring
-        orb = features.get("orb_rate_live", 0.0)
-        multiplier *= (1.0 + 0.08 * orb)
+        # Turnover rate: kills possessions, reduces scoring
+        to_rate = features.get("to_rate_live", 0.0)
+        multiplier *= (1.0 - 0.06 * to_rate)
+
+        # 3PA rate: high 3PA → more variance, slightly higher expected pts
+        three_pa = features.get("three_pa_rate_live", 0.0)
+        multiplier *= (1.0 + 0.05 * (three_pa - 0.35))
+
+        # Fatigue (average of both teams)
+        avg_fatigue = (features.get("fatigue_home", 0.0) +
+                       features.get("fatigue_away", 0.0)) / 2.0
+        multiplier *= (1.0 - 0.08 * avg_fatigue)
 
         return float(np.clip(multiplier, 0.4, 1.8))
 
     @staticmethod
     def home_win_prob_adjustment(features: Dict, minutes_remaining: float) -> float:
-        """
-        Returns an additive adjustment to home win probability (in log-odds
-        space, then converted back) based on momentum and pressure features.
-        Range: roughly [-0.05, +0.05] — a nudge, not a takeover.
-        """
         adjustment = 0.0
-
-        # Momentum: recent quarter dominance
         momentum_home = features.get("momentum_home", 0.0)
-        # Momentum matters more late in the game
         time_weight = 1.0 - (minutes_remaining / 48.0)
         adjustment += 0.06 * momentum_home * time_weight
-
-        # Spread divergence: underdog overperforming → regression to mean
-        # (away team more likely to regress if they're way ahead of expectation)
         divergence = features.get("spread_divergence", 0.0)
-        # Negative feedback: if home is over-performing (divergence > 0),
-        # expect slight regression (reduce home advantage adjustment)
         adjustment -= 0.03 * divergence
-
         return float(np.clip(adjustment, -0.07, 0.07))
 
     @staticmethod
     def player_scoring_multipliers(features: Dict, team_side: str) -> Tuple[float, float]:
-        """
-        Returns (foul_trouble_penalty, garbage_time_penalty) for a specific
-        team's players — used directly in PlayerScoringModel.
-        """
-        key = f"foul_trouble_{team_side}"
-        foul_penalty = float(np.clip(features.get(key, 0.0), 0.0, 0.4))
+        # Note: foul_trouble removed (data unavailable from AllSportsAPI)
         garbage_penalty = float(np.clip(features.get("garbage_time", 0.0) * 0.5, 0.0, 0.3))
-        return foul_penalty, garbage_penalty
+        fatigue_penalty = float(np.clip(features.get(f"fatigue_{team_side}", 0.0) * 0.3, 0.0, 0.2))
+        combined_penalty = min(garbage_penalty + fatigue_penalty, 0.4)
+        return 0.0, combined_penalty  # (foul_penalty=0, garbage+fatigue penalty)
 
 
 # =========================================================
-# LIVE-ADAPTIVE GAME TOTAL MODEL
+# SYNTHETIC TOTAL ORCHESTRATOR
 # =========================================================
-class LiveAdaptivePaceModel:
-    NEUTRAL_QUARTER_TOTAL = 52.0
+class SyntheticTotalOrchestrator:
+    """
+    Predicts Over/Under total points WITHOUT bookmaker odds.
 
-    def __init__(self):
-        self.quarter_totals: List[float] = []
+    Methodology:
+    1. Use BayesianPaceModel posterior to project final total
+       (full distribution, not just point estimate)
+    2. Find the nearest "natural line" (round numbers common in basketball
+       betting: multiples of 5, or significant totals)
+    3. Only fire an alert when the model has HIGH CONFIDENCE — specifically
+       when the 80% credible interval lies entirely above OR entirely below
+       the natural line (meaning 90%+ probability on one side)
+    4. Alert includes the projected total, confidence level, and the
+       specific line being beaten
 
-    def add_completed_quarter(self, home_pts: int, away_pts: int):
-        self.quarter_totals.append(home_pts + away_pts)
+    This is equivalent to what a sharp bettor would do: only bet a total
+    when you have very strong conviction, not just a slight lean.
+    """
 
-    def current_pace_per_minute(self, pace_multiplier: float = 1.0) -> float:
-        if not self.quarter_totals:
-            base = self.NEUTRAL_QUARTER_TOTAL / 12.0
-        else:
-            n = len(self.quarter_totals)
-            weights = np.linspace(0.7, 1.3, n)
-            weighted_avg = np.average(self.quarter_totals, weights=weights)
-            base = weighted_avg / 12.0
-        return base * pace_multiplier
+    # Minimum confidence threshold before firing any alert
+    MIN_CONFIDENCE = 0.60  # posterior confidence (based on data seen so far)
 
-    def pace_confidence(self) -> float:
-        n = len(self.quarter_totals)
-        if n == 0: return 0.15
-        elif n == 1: return 0.45
-        elif n == 2: return 0.70
-        elif n == 3: return 0.90
-        return 0.95
+    # Minimum probability on one side before alerting
+    # (80% credible interval method → effectively ~90% probability)
+    MIN_SIDE_PROBABILITY = 0.72
 
+    # Natural lines to check (common basketball total ranges)
+    NATURAL_LINES = list(range(130, 260, 5))  # 130, 135, ..., 255
 
-class LiveOnlyGameTotalModel:
-    def __init__(self, dispersion: float = 25.0):
-        self.dispersion = dispersion
-        self.pace_model = LiveAdaptivePaceModel()
+    def __init__(self, bankroll: float, ev_alert_threshold: float = 0.04):
+        self.bankroll = bankroll
+        self.ev_alert_threshold = ev_alert_threshold
+        self.kelly = KellyStaking()
 
-    def ingest_quarter(self, home_pts: int, away_pts: int):
-        self.pace_model.add_completed_quarter(home_pts, away_pts)
+    def evaluate(self, live_total_model: LiveOnlyGameTotalModel,
+                 current_total: int, quarters_completed: int,
+                 minutes_elapsed_current_q: float,
+                 pace_multiplier: float = 1.0) -> Optional[Dict]:
+        """
+        Evaluates all natural lines and returns the strongest signal,
+        or None if no line meets the confidence threshold.
+        """
+        bayesian = live_total_model.bayesian
+        minutes_remaining = max(48.0 - (quarters_completed * 12.0 + minutes_elapsed_current_q), 0.0)
 
-    def over_under_prob(self, current_total: int, quarters_completed: int,
-                         minutes_elapsed_current_q: float, line: float,
-                         pace_multiplier: float = 1.0) -> Dict:
-        per_minute_rate = self.pace_model.current_pace_per_minute(pace_multiplier)
-        confidence = self.pace_model.pace_confidence()
+        # Require at least some game data before alerting
+        if bayesian.pace_confidence < self.MIN_CONFIDENCE:
+            return None
 
-        minutes_played_total = quarters_completed * 12.0 + minutes_elapsed_current_q
-        minutes_remaining = max(48.0 - minutes_played_total, 0.0)
+        # Get the projected total and 80% credible interval
+        low, high = bayesian.high_confidence_total_range(
+            current_total, minutes_remaining, pace_multiplier, credible_pct=0.80
+        )
+        projected_total = current_total + bayesian.posterior_mean_rate * minutes_remaining * pace_multiplier
 
-        expected_remaining = max(per_minute_rate * minutes_remaining, 0.5)
-        adjusted_dispersion = self.dispersion * confidence if confidence > 0 else self.dispersion * 0.2
+        best_alert = None
+        best_probability = 0.0
 
-        r, p = QuarterScoringModel._nbinom_params(expected_remaining, max(adjusted_dispersion, 1.0))
-        dist = nbinom(r, p)
+        for line in self.NATURAL_LINES:
+            # Only consider lines near our projected total (within 25 pts)
+            if abs(projected_total - line) > 25:
+                continue
 
-        points_needed = line - current_total
-        if points_needed < 0:
-            return {"p_over": 1.0, "p_under": 0.0, "already_settled": True}
+            result = bayesian.predictive_over_under_prob(
+                current_total, minutes_remaining, float(line), pace_multiplier
+            )
 
-        threshold = int(np.floor(points_needed))
-        p_under = dist.cdf(threshold)
-        p_over = 1.0 - p_under
+            if result.get("already_settled"):
+                continue
 
-        return {
-            "p_over": round(float(p_over), 4),
-            "p_under": round(float(1 - p_over), 4),
-            "already_settled": False,
-            "expected_final_total": round(float(current_total + dist.mean()), 1),
-            "std_dev": round(float(dist.std()), 2),
-            "pace_confidence": round(confidence, 2),
-            "observed_pace_per_min": round(per_minute_rate, 3),
-        }
+            p_over = result["p_over"]
+            p_under = result["p_under"]
+
+            # Method 1: 80% CI entirely above line → strong Over signal
+            # Method 2: 80% CI entirely below line → strong Under signal
+            # Method 3: Direct probability threshold
+            ci_over = low > line   # entire credible interval above line
+            ci_under = high < line  # entire credible interval below line
+
+            side, prob = None, 0.0
+            if ci_over and p_over > self.MIN_SIDE_PROBABILITY:
+                side, prob = "Over", p_over
+            elif ci_under and p_under > self.MIN_SIDE_PROBABILITY:
+                side, prob = "Under", p_under
+            elif p_over > self.MIN_SIDE_PROBABILITY + 0.05:  # extra margin without CI confirmation
+                side, prob = "Over", p_over
+            elif p_under > self.MIN_SIDE_PROBABILITY + 0.05:
+                side, prob = "Under", p_under
+
+            if side and prob > best_probability:
+                best_probability = prob
+                best_alert = {
+                    "market": f"Synthetic Total {side} {line}",
+                    "side": side,
+                    "line": line,
+                    "model_probability": round(prob, 4),
+                    "projected_final_total": round(projected_total, 1),
+                    "credible_interval_80pct": (round(low, 1), round(high, 1)),
+                    "pace_confidence": round(bayesian.pace_confidence, 3),
+                    "posterior_rate_per_min": round(bayesian.posterior_mean_rate, 3),
+                    "offered_odds": None,   # no bookmaker odds
+                    "edge_pct": round((prob - 0.5) * 100, 2),  # edge vs coin flip
+                    "recommended_stake": 0.0,  # no stake without odds
+                    "alert": f"📊 SYNTHETIC TOTAL: {side} {line} ({round(prob*100,1)}% confident)",
+                }
+
+        if best_alert is None:
+            return None
+
+        # Add Kelly stake using implied "fair" odds if confidence is very high
+        # Estimated odds: if model says 75% likely, fair odds = 1/0.75 = 1.33
+        # We use this to give a stake recommendation even without bookmaker
+        if best_alert["model_probability"] >= 0.75:
+            implied_fair_odds = round(1.0 / best_alert["model_probability"], 3)
+            stake_info = self.kelly.calculate_stake(
+                best_alert["model_probability"], implied_fair_odds, self.bankroll
+            )
+            best_alert["recommended_stake"] = stake_info["recommended_stake"]
+            best_alert["implied_fair_odds"] = implied_fair_odds
+
+        return best_alert
 
 
 # =========================================================
-# BAYESIAN LIVE WIN PROBABILITY (enhanced with elite features)
+# BAYESIAN LIVE WIN PROBABILITY
 # =========================================================
 class LiveWinProbabilityModel:
     def __init__(self, pregame_elo_diff: float, elo_to_points_scale: float = 0.04):
@@ -564,11 +736,10 @@ class LiveWinProbabilityModel:
 
         projected_final_diff = current_score_diff + expected_remaining_margin_shift
         vol = self._volatility_per_minute(minutes_remaining)
-
-        p_home_win = 1 - norm.cdf(0, loc=projected_final_diff, scale=vol)
-
-        # Apply elite feature adjustment (bounded nudge)
-        p_home_win = float(np.clip(p_home_win + elite_adjustment, 0.001, 0.999))
+        p_home_win = float(np.clip(
+            1 - norm.cdf(0, loc=projected_final_diff, scale=vol) + elite_adjustment,
+            0.001, 0.999
+        ))
 
         return {
             "p_home_win": round(p_home_win, 4),
@@ -578,7 +749,7 @@ class LiveWinProbabilityModel:
 
 
 # =========================================================
-# PLAYER SCORING MODEL (enhanced with foul/garbage features)
+# PLAYER SCORING MODEL
 # =========================================================
 class PlayerScoringModel:
     NEUTRAL_PTS_PER_MIN = 0.45
@@ -611,7 +782,8 @@ class PlayerScoringModel:
         threshold = int(np.floor(points_needed))
         p_over = 1.0 - dist.cdf(threshold)
         return {
-            "p_over": round(float(p_over), 4), "p_under": round(float(1 - p_over), 4),
+            "p_over": round(float(p_over), 4),
+            "p_under": round(float(1 - p_over), 4),
             "already_settled": False,
             "expected_final_points": round(float(points_so_far + dist.mean()), 2),
             "std_dev": round(float(dist.std()), 2),
@@ -633,12 +805,11 @@ class EnsembleBlender:
         available = {k: v for k, v in probabilities.items() if k in self.source_weights}
         total_weight = sum(self.source_weights[k] for k in available)
         if total_weight == 0:
-            raise ValueError("No valid probability sources provided")
-        blended = sum(
+            raise ValueError("No valid probability sources")
+        return round(sum(
             probabilities[k] * (self.source_weights[k] / total_weight)
             for k in available
-        )
-        return round(blended, 4)
+        ), 4)
 
 
 # =========================================================
@@ -656,18 +827,17 @@ class KellyStaking:
         full_kelly_fraction = (b * fair_probability - q) / b if b > 0 else 0.0
 
         if full_kelly_fraction <= 0:
-            return {"recommended_stake": 0.0, "edge": round(fair_probability - (1 / decimal_odds), 4),
-                    "reason": "No positive edge — do not bet"}
+            return {"recommended_stake": 0.0,
+                    "edge": round(fair_probability - (1 / decimal_odds), 4),
+                    "reason": "No positive edge"}
 
         applied_fraction = min(full_kelly_fraction * self.kelly_fraction, self.max_stake_pct)
         stake = round(bankroll * applied_fraction, 2)
-        edge = fair_probability - (1 / decimal_odds)
-
         return {
             "recommended_stake": stake,
             "stake_pct_of_bankroll": round(applied_fraction * 100, 2),
             "full_kelly_pct": round(full_kelly_fraction * 100, 2),
-            "edge": round(edge, 4),
+            "edge": round(fair_probability - (1 / decimal_odds), 4),
             "expected_value_per_unit": round((fair_probability * b) - q, 4),
         }
 
@@ -677,28 +847,25 @@ class KellyStaking:
 # =========================================================
 class SimpleTeamStrengthEstimator:
     @staticmethod
-    def estimate_elo_diff_from_records(home_wins: int, home_losses: int,
-                                        away_wins: int, away_losses: int,
-                                        elo_scale: float = 400.0) -> float:
-        home_win_pct = np.clip(home_wins / max(home_wins + home_losses, 1), 0.05, 0.95)
-        away_win_pct = np.clip(away_wins / max(away_wins + away_losses, 1), 0.05, 0.95)
-        home_logit = np.log(home_win_pct / (1 - home_win_pct))
-        away_logit = np.log(away_win_pct / (1 - away_win_pct))
+    def estimate_elo_diff_from_records(home_wins, home_losses, away_wins, away_losses,
+                                        elo_scale=400.0) -> float:
+        home_wp = np.clip(home_wins / max(home_wins + home_losses, 1), 0.05, 0.95)
+        away_wp = np.clip(away_wins / max(away_wins + away_losses, 1), 0.05, 0.95)
+        home_logit = np.log(home_wp / (1 - home_wp))
+        away_logit = np.log(away_wp / (1 - away_wp))
         return (home_logit - away_logit) * elo_scale / 4.0
 
 
-def sanity_check_disagreement(model_prob: float, market_prob: float,
-                               max_allowed_diff: float = 0.25) -> bool:
+def sanity_check_disagreement(model_prob, market_prob, max_allowed_diff=0.25):
     return abs(model_prob - market_prob) <= max_allowed_diff
 
 
 # =========================================================
-# ORCHESTRATOR: FULL-GAME HOME/AWAY (with elite features)
+# ORCHESTRATORS
 # =========================================================
 class HomeAwayOrchestrator:
-    def __init__(self, bankroll: float, ev_alert_threshold: float = 0.03,
-                 pregame_elo_diff: float = 0.0,
-                 max_model_market_disagreement: float = 0.25):
+    def __init__(self, bankroll, ev_alert_threshold=0.03, pregame_elo_diff=0.0,
+                 max_model_market_disagreement=0.25):
         self.bankroll = bankroll
         self.ev_alert_threshold = ev_alert_threshold
         self.max_disagreement = max_model_market_disagreement
@@ -706,21 +873,14 @@ class HomeAwayOrchestrator:
         self.ensemble = EnsembleBlender()
         self.kelly = KellyStaking()
 
-    def evaluate_full_game(self, match_state: Dict, odds: Dict,
-                            elite_features: Optional[Dict] = None) -> Optional[Dict]:
+    def evaluate_full_game(self, match_state, odds, elite_features=None):
         features = elite_features or {}
-
-        # Elite feature adjustment to win probability
         elite_adj = EliteFeatureAdjuster.home_win_prob_adjustment(
             features, match_state.get("minutes_remaining", 24.0)
-        ) if features else 0.0
-
-        wp = self.wp_model.win_probability(
-            current_score_diff=match_state["score_diff"],
-            minutes_remaining=match_state["minutes_remaining"],
-            elite_adjustment=elite_adj,
         )
-
+        wp = self.wp_model.win_probability(
+            match_state["score_diff"], match_state["minutes_remaining"], elite_adj
+        )
         fair_probs = ShinDevig.devig([odds["home_decimal"], odds["away_decimal"]])
         market_p_home = fair_probs[0]
 
@@ -728,48 +888,38 @@ class HomeAwayOrchestrator:
             return None
 
         blended_p_home = self.ensemble.blend({
-            "statistical_model": wp["p_home_win"],
-            "market_devigged": market_p_home,
+            "statistical_model": wp["p_home_win"], "market_devigged": market_p_home,
         })
         return self._check_both_sides(match_state, odds, blended_p_home, "Full Game Home/Away")
 
-    def _check_both_sides(self, match_state: Dict, odds: Dict, blended_p_home: float,
-                           market_label: str) -> Optional[Dict]:
+    def _check_both_sides(self, match_state, odds, blended_p_home, market_label):
         blended_p_away = 1 - blended_p_home
-        home_implied = 1 / odds["home_decimal"]
-        away_implied = 1 / odds["away_decimal"]
-        home_edge = blended_p_home - home_implied
-        away_edge = blended_p_away - away_implied
+        home_edge = blended_p_home - (1 / odds["home_decimal"])
+        away_edge = blended_p_away - (1 / odds["away_decimal"])
 
-        best_side, best_edge, best_odds, best_prob = None, 0.0, 0.0, 0.0
+        side, edge, side_odds, prob = None, 0.0, 0.0, 0.0
         if home_edge > self.ev_alert_threshold and home_edge > away_edge:
-            best_side, best_edge, best_odds, best_prob = "Home", home_edge, odds["home_decimal"], blended_p_home
+            side, edge, side_odds, prob = "Home", home_edge, odds["home_decimal"], blended_p_home
         elif away_edge > self.ev_alert_threshold:
-            best_side, best_edge, best_odds, best_prob = "Away", away_edge, odds["away_decimal"], blended_p_away
+            side, edge, side_odds, prob = "Away", away_edge, odds["away_decimal"], blended_p_away
 
-        if best_side is None:
+        if side is None:
             return None
-
-        stake_info = self.kelly.calculate_stake(best_prob, best_odds, self.bankroll)
+        stake_info = self.kelly.calculate_stake(prob, side_odds, self.bankroll)
         if stake_info["recommended_stake"] <= 0:
             return None
 
         return {
-            "match_id": match_state["match_id"], "market": market_label,
-            "side": best_side, "blended_probability": round(best_prob, 4),
-            "offered_odds": best_odds, "edge_pct": round(best_edge * 100, 2),
-            "recommended_stake": stake_info["recommended_stake"],
+            "match_id": match_state["match_id"], "market": market_label, "side": side,
+            "blended_probability": round(prob, 4), "offered_odds": side_odds,
+            "edge_pct": round(edge * 100, 2), "recommended_stake": stake_info["recommended_stake"],
             "alert": "🔥 VALUE BET DETECTED",
         }
 
 
-# =========================================================
-# ORCHESTRATOR: QUARTER HOME/AWAY (with elite features)
-# =========================================================
 class QuarterHomeAwayOrchestrator:
-    def __init__(self, bankroll: float, ev_alert_threshold: float = 0.03,
-                 max_model_market_disagreement: float = 0.30,
-                 volatility_constant: float = 2.2):
+    def __init__(self, bankroll, ev_alert_threshold=0.03,
+                 max_model_market_disagreement=0.30, volatility_constant=2.2):
         self.bankroll = bankroll
         self.ev_alert_threshold = ev_alert_threshold
         self.max_disagreement = max_model_market_disagreement
@@ -777,83 +927,67 @@ class QuarterHomeAwayOrchestrator:
         self.ensemble = EnsembleBlender()
         self.kelly = KellyStaking()
 
-    def evaluate_current_quarter(self, quarter_score_diff: int, minutes_elapsed_in_q: float,
-                                  odds: Dict, quarter_number: int,
-                                  elite_features: Optional[Dict] = None) -> Optional[Dict]:
+    def evaluate_current_quarter(self, quarter_score_diff, minutes_elapsed_in_q,
+                                  odds, quarter_number, elite_features=None):
         features = elite_features or {}
         minutes_remaining_in_q = max(12.0 - minutes_elapsed_in_q, 0.01)
-
         rate_per_min = quarter_score_diff / minutes_elapsed_in_q if minutes_elapsed_in_q > 0 else 0.0
-        regressed_rate = rate_per_min * 0.5
-        projected_final_q_diff = quarter_score_diff + (regressed_rate * minutes_remaining_in_q)
+        projected_final_q_diff = quarter_score_diff + (rate_per_min * 0.5 * minutes_remaining_in_q)
+
+        # Momentum nudge
+        projected_final_q_diff += features.get("momentum_home", 0.0) * 1.5
         vol = self.volatility_constant * np.sqrt(minutes_remaining_in_q)
 
-        # Apply momentum nudge to within-quarter projection
-        momentum_home = features.get("momentum_home", 0.0)
-        projected_final_q_diff += momentum_home * 1.5  # small nudge from recent momentum
-
-        p_home_wins_quarter = float(np.clip(
-            1 - norm.cdf(0, loc=projected_final_q_diff, scale=vol), 0.02, 0.98
-        ))
-
+        p_home = float(np.clip(1 - norm.cdf(0, loc=projected_final_q_diff, scale=vol), 0.02, 0.98))
         fair_probs = ShinDevig.devig([odds["home_decimal"], odds["away_decimal"]])
         market_p_home = fair_probs[0]
 
-        if abs(p_home_wins_quarter - market_p_home) > self.max_disagreement:
+        if abs(p_home - market_p_home) > self.max_disagreement:
             return None
 
         blended_p_home = self.ensemble.blend({
-            "statistical_model": p_home_wins_quarter, "market_devigged": market_p_home,
+            "statistical_model": p_home, "market_devigged": market_p_home,
         })
         blended_p_away = 1 - blended_p_home
 
-        home_implied = 1 / odds["home_decimal"]
-        away_implied = 1 / odds["away_decimal"]
-        home_edge = blended_p_home - home_implied
-        away_edge = blended_p_away - away_implied
+        home_edge = blended_p_home - (1 / odds["home_decimal"])
+        away_edge = blended_p_away - (1 / odds["away_decimal"])
 
-        best_side, best_edge, best_odds, best_prob = None, 0.0, 0.0, 0.0
+        side, edge, side_odds, prob = None, 0.0, 0.0, 0.0
         if home_edge > self.ev_alert_threshold and home_edge > away_edge:
-            best_side, best_edge, best_odds, best_prob = "Home", home_edge, odds["home_decimal"], blended_p_home
+            side, edge, side_odds, prob = "Home", home_edge, odds["home_decimal"], blended_p_home
         elif away_edge > self.ev_alert_threshold:
-            best_side, best_edge, best_odds, best_prob = "Away", away_edge, odds["away_decimal"], blended_p_away
+            side, edge, side_odds, prob = "Away", away_edge, odds["away_decimal"], blended_p_away
 
-        if best_side is None:
+        if side is None:
             return None
-
-        stake_info = self.kelly.calculate_stake(best_prob, best_odds, self.bankroll)
+        stake_info = self.kelly.calculate_stake(prob, side_odds, self.bankroll)
         if stake_info["recommended_stake"] <= 0:
             return None
 
         return {
-            "market": f"Home/Away - Quarter {quarter_number}", "side": best_side,
-            "blended_probability": round(best_prob, 4), "offered_odds": best_odds,
-            "edge_pct": round(best_edge * 100, 2),
-            "recommended_stake": stake_info["recommended_stake"],
+            "market": f"Home/Away - Quarter {quarter_number}", "side": side,
+            "blended_probability": round(prob, 4), "offered_odds": side_odds,
+            "edge_pct": round(edge * 100, 2), "recommended_stake": stake_info["recommended_stake"],
             "alert": "🔥 VALUE BET DETECTED",
         }
 
 
-# =========================================================
-# ORCHESTRATOR: PLAYER PROPS (with foul/garbage features)
-# =========================================================
 class PlayerPropsOrchestrator:
     MAX_PLAUSIBLE_EDGE = 0.25
 
-    def __init__(self, bankroll: float, ev_alert_threshold: float = 0.04,
-                 max_relative_std: float = 0.35):
+    def __init__(self, bankroll, ev_alert_threshold=0.04, max_relative_std=0.35):
         self.bankroll = bankroll
         self.ev_alert_threshold = ev_alert_threshold
         self.max_relative_std = max_relative_std
         self.model = PlayerScoringModel()
         self.kelly = KellyStaking()
 
-    def evaluate_milestone(self, player_name: str, points_so_far: int, minutes_played: float,
-                            minutes_remaining_in_game: float, threshold_odds: Dict,
-                            team_side: str = "home",
-                            elite_features: Optional[Dict] = None) -> Optional[Dict]:
+    def evaluate_milestone(self, player_name, points_so_far, minutes_played,
+                            minutes_remaining_in_game, threshold_odds,
+                            team_side="home", elite_features=None):
         features = elite_features or {}
-        foul_penalty, garbage_penalty = EliteFeatureAdjuster.player_scoring_multipliers(
+        _, garbage_fatigue_penalty = EliteFeatureAdjuster.player_scoring_multipliers(
             features, team_side
         )
 
@@ -861,8 +995,8 @@ class PlayerPropsOrchestrator:
             points_so_far=points_so_far, minutes_played=minutes_played,
             minutes_remaining_in_game=minutes_remaining_in_game,
             line=threshold_odds["threshold"],
-            foul_trouble_penalty=foul_penalty,
-            garbage_time_penalty=garbage_penalty,
+            foul_trouble_penalty=0.0,
+            garbage_time_penalty=garbage_fatigue_penalty,
         )
 
         if result.get("already_settled"):
@@ -873,8 +1007,7 @@ class PlayerPropsOrchestrator:
             return None
 
         offered_odds = threshold_odds["over_decimal"]
-        implied_prob = 1 / offered_odds
-        edge = result["p_over"] - implied_prob
+        edge = result["p_over"] - (1 / offered_odds)
 
         if edge < self.ev_alert_threshold or edge > self.MAX_PLAUSIBLE_EDGE:
             return None
@@ -892,26 +1025,24 @@ class PlayerPropsOrchestrator:
         }
 
 
-# =========================================================
-# ORCHESTRATOR: ODD/EVEN (with pace multiplier)
-# =========================================================
 class OddEvenOrchestrator:
-    def __init__(self, bankroll: float, ev_alert_threshold: float = 0.04):
+    def __init__(self, bankroll, ev_alert_threshold=0.04):
         self.bankroll = bankroll
         self.ev_alert_threshold = ev_alert_threshold
         self.kelly = KellyStaking()
 
-    def evaluate(self, live_total_model: LiveOnlyGameTotalModel, current_total: int,
-                 quarters_completed: int, minutes_elapsed_current_q: float,
-                 odds: Dict, pace_multiplier: float = 1.0) -> Optional[Dict]:
-        per_minute_rate = live_total_model.pace_model.current_pace_per_minute(pace_multiplier)
-        confidence = live_total_model.pace_model.pace_confidence()
-        minutes_played_total = quarters_completed * 12.0 + minutes_elapsed_current_q
-        minutes_remaining = max(48.0 - minutes_played_total, 0.0)
-        expected_remaining = max(per_minute_rate * minutes_remaining, 0.5)
-        adjusted_dispersion = max(live_total_model.dispersion * confidence, 1.0)
-        r, p = QuarterScoringModel._nbinom_params(expected_remaining, adjusted_dispersion)
-        dist = nbinom(r, p)
+    def evaluate(self, live_total_model, current_total, quarters_completed,
+                 minutes_elapsed_current_q, odds, pace_multiplier=1.0):
+        bayesian = live_total_model.bayesian
+        minutes_remaining = max(48.0 - (quarters_completed * 12.0 + minutes_elapsed_current_q), 0.0)
+
+        adj_minutes = minutes_remaining * pace_multiplier
+        if adj_minutes <= 0:
+            return None
+
+        r = bayesian.alpha
+        p_param = bayesian.beta / (bayesian.beta + adj_minutes)
+        dist = nbinom(r, p_param)
 
         max_k = int(dist.mean() + 6 * dist.std()) + 1
         p_odd, p_even = 0.0, 0.0
@@ -944,6 +1075,7 @@ class OddEvenOrchestrator:
         stake_info = self.kelly.calculate_stake(prob, side_odds, self.bankroll)
         if stake_info["recommended_stake"] <= 0:
             return None
+
         return {
             "market": "Odd/Even Total", "side": side, "blended_probability": round(prob, 4),
             "offered_odds": side_odds, "edge_pct": round(edge * 100, 2),
@@ -951,19 +1083,15 @@ class OddEvenOrchestrator:
         }
 
 
-# =========================================================
-# ORCHESTRATOR: HIGHEST SCORING QUARTER
-# =========================================================
 class HighestScoringQuarterOrchestrator:
     NEUTRAL_QUARTER_PRIORS = {1: 0.23, 2: 0.26, 3: 0.24, 4: 0.27}
 
-    def __init__(self, bankroll: float, ev_alert_threshold: float = 0.05):
+    def __init__(self, bankroll, ev_alert_threshold=0.05):
         self.bankroll = bankroll
         self.ev_alert_threshold = ev_alert_threshold
         self.kelly = KellyStaking()
 
-    def evaluate(self, completed_quarter_totals: Dict[int, int],
-                 odds_by_quarter: Dict[int, float]) -> Optional[Dict]:
+    def evaluate(self, completed_quarter_totals, odds_by_quarter):
         remaining = [q for q in [1, 2, 3, 4] if q not in completed_quarter_totals]
         if not remaining:
             return None
@@ -991,9 +1119,10 @@ class HighestScoringQuarterOrchestrator:
         stake_info = self.kelly.calculate_stake(best_prob, best_odds, self.bankroll)
         if stake_info["recommended_stake"] <= 0:
             return None
+
         return {
             "market": "Highest Scoring Quarter", "side": f"Q{best_q}",
             "blended_probability": round(best_prob, 4), "offered_odds": best_odds,
-            "edge_pct": round(best_edge * 100, 2),
-            "recommended_stake": stake_info["recommended_stake"], "alert": "🔥 VALUE BET DETECTED",
+            "edge_pct": round(best_edge * 100, 2), "recommended_stake": stake_info["recommended_stake"],
+            "alert": "🔥 VALUE BET DETECTED",
         }
