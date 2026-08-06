@@ -1,14 +1,15 @@
 """
 scheduler.py
 Polling loop with automatic settlement, permanent alert deduplication,
-and elite feature extraction integrated into every prediction cycle.
+elite feature extraction, and synthetic total predictions.
 
-ELITE FEATURES NOW ACTIVE:
-- LiveGameFeatureExtractor runs every poll cycle per match
-- pace_multiplier fed into OddEven/GameTotal models
-- elite_features fed into HomeAway, Quarter, PlayerProps orchestrators
-- foul_trouble + garbage_time penalties applied to player scoring
-- momentum nudge applied to quarter and full-game win probability
+NEW IN THIS VERSION:
+- SyntheticTotalOrchestrator integrated (Over/Under without bookmaker odds)
+- BayesianPaceModel intra-quarter updates (every poll cycle, not just
+  at quarter end) for more accurate mid-quarter pace estimation
+- Elite features from confirmed AllSportsAPI fields only
+- player team_side passed to PlayerPropsOrchestrator for correct
+  garbage_time/fatigue penalties per team
 """
 
 import requests
@@ -27,7 +28,8 @@ from parsers import (
 )
 from prediction_engine import (
     HomeAwayOrchestrator, QuarterHomeAwayOrchestrator, PlayerPropsOrchestrator,
-    OddEvenOrchestrator, HighestScoringQuarterOrchestrator, LiveOnlyGameTotalModel,
+    OddEvenOrchestrator, HighestScoringQuarterOrchestrator,
+    LiveOnlyGameTotalModel, SyntheticTotalOrchestrator,
     LiveGameFeatureExtractor, EliteFeatureAdjuster,
 )
 
@@ -40,6 +42,9 @@ class LiveMatchManager:
         self._standings_cache = {}
         self._standings_cache_time = {}
 
+    # =====================================================
+    # API KEY
+    # =====================================================
     def _get_active_api_key(self) -> str:
         session = get_db_session()
         try:
@@ -56,6 +61,9 @@ class LiveMatchManager:
         finally:
             session.close()
 
+    # =====================================================
+    # SAFE FETCH
+    # =====================================================
     def _fetch(self, params, api_key):
         params["APIkey"] = api_key
         resp = requests.get(self.base_url, params=params, timeout=15)
@@ -63,20 +71,19 @@ class LiveMatchManager:
         try:
             data = resp.json()
         except ValueError:
-            print(f"[_fetch] Response was not valid JSON. Raw text: {resp.text[:200]}")
+            print(f"[_fetch] Response was not valid JSON. Raw: {resp.text[:200]}")
             return {"result": {}}
         if not isinstance(data, dict):
-            print(f"[_fetch] Unexpected response type ({type(data).__name__}).")
+            print(f"[_fetch] Unexpected type ({type(data).__name__}).")
             return {"result": {}}
         if data.get("success") == 0:
             print(f"[_fetch] API returned success=0.")
         return data
 
+    # =====================================================
+    # DEDUPLICATION (permanent — one alert per match+market+side)
+    # =====================================================
     def _should_fire_alert(self, session, match_id, market, side) -> bool:
-        """
-        One alert per match+market+side combination, forever.
-        Checks database directly — survives process restarts.
-        """
         existing = (
             session.query(ValueBetAlert)
             .filter_by(match_id=match_id, market=market, side=side)
@@ -84,12 +91,15 @@ class LiveMatchManager:
         )
         return existing is None
 
+    # =====================================================
+    # MAIN POLL LOOP
+    # =====================================================
     def poll_cycle(self):
         print(f"[heartbeat] Poll cycle running at {datetime.utcnow().isoformat()}")
 
         api_key = self._get_active_api_key()
         if not api_key:
-            print("[poll_cycle] No active API key — skipping this cycle.")
+            print("[poll_cycle] No active API key — skipping.")
             return
 
         try:
@@ -123,6 +133,9 @@ class LiveMatchManager:
         except Exception as e:
             print(f"[poll_cycle] Settlement error: {e}")
 
+    # =====================================================
+    # MATCH INITIALIZATION
+    # =====================================================
     def _ensure_match_initialized(self, match_id):
         if match_id not in self.active_matches:
             self.active_matches[match_id] = {
@@ -135,10 +148,15 @@ class LiveMatchManager:
                 "player_orch": PlayerPropsOrchestrator(bankroll=self.bankroll),
                 "odd_even_orch": OddEvenOrchestrator(bankroll=self.bankroll),
                 "hsq_orch": HighestScoringQuarterOrchestrator(bankroll=self.bankroll),
+                "synthetic_total_orch": SyntheticTotalOrchestrator(bankroll=self.bankroll),
                 "live_total_model": LiveOnlyGameTotalModel(),
                 "quarters_ingested": 0,
+                "last_intra_quarter_pts": 0,  # tracks intra-quarter Bayesian updates
             }
 
+    # =====================================================
+    # ELO DIFF (cached per league, refreshed hourly)
+    # =====================================================
     def _get_elo_diff(self, event, api_key):
         league_key = event.get("league_key")
         now = datetime.utcnow()
@@ -154,13 +172,15 @@ class LiveMatchManager:
             except requests.RequestException:
                 self._standings_cache[league_key] = {"result": []}
 
-        standings = self._standings_cache[league_key]
         return AllSportsStandingsParser.get_matchup_elo_diff(
-            standings,
+            self._standings_cache[league_key],
             event.get("event_home_team", ""),
             event.get("event_away_team", ""),
         )
 
+    # =====================================================
+    # PER-MATCH PROCESSING
+    # =====================================================
     def _process_match(self, event, match_id, api_key):
         match_state = AllSportsLivescoreParser.build_match_state(event)
         if match_state is None:
@@ -174,8 +194,9 @@ class LiveMatchManager:
 
         home_team = match_state.get("home_team")
         away_team = match_state.get("away_team")
+        match_bundle = self.active_matches[match_id]
 
-        # ── ELITE FEATURES ───────────────────────────────────────────
+        # ── ELITE FEATURES ────────────────────────────────────────────
         elo_diff = self._get_elo_diff(event, api_key)
         elite_features = LiveGameFeatureExtractor.extract_all(
             event, match_state, pregame_elo_diff=elo_diff
@@ -183,12 +204,43 @@ class LiveMatchManager:
         pace_multiplier = EliteFeatureAdjuster.combined_pace_multiplier(elite_features)
         print(f"[elite] {home_team} vs {away_team} | "
               f"garbage={elite_features.get('garbage_time', 0):.2f} "
-              f"pace_mult={pace_multiplier:.2f} "
+              f"pace={pace_multiplier:.2f} "
+              f"efg={elite_features.get('efg_pct_live', 0):.3f} "
               f"momentum_home={elite_features.get('momentum_home', 0):.2f}")
+        # ─────────────────────────────────────────────────────────────
+
+        # ── SYNC COMPLETED QUARTERS INTO BAYESIAN MODEL ──────────────
+        already_ingested = match_bundle["quarters_ingested"]
+        new_count = AllSportsLivescoreParser.sync_orchestrator_quarters(
+            match_bundle["live_total_model"],
+            match_state["completed_quarters"],
+            already_ingested,
+        )
+        match_bundle["quarters_ingested"] = new_count
+
+        # ── INTRA-QUARTER BAYESIAN UPDATE (every poll cycle) ─────────
+        # Update Bayesian model with partial quarter data so mid-quarter
+        # predictions are more accurate than waiting until quarter ends
+        prior_total = sum(q["home"] + q["away"] for q in match_state["completed_quarters"])
+        intra_q_pts = max(0, match_state["current_total"] - prior_total)
+        last_intra_pts = match_bundle["last_intra_quarter_pts"]
+        new_intra_pts = intra_q_pts - last_intra_pts
+
+        if new_intra_pts > 0 and match_state["minutes_elapsed_current_q"] > 0:
+            match_bundle["live_total_model"].update_intra_quarter(
+                points_so_far=new_intra_pts,
+                minutes_elapsed=match_state["minutes_elapsed_current_q"],
+            )
+            match_bundle["last_intra_quarter_pts"] = intra_q_pts
+
+        # Reset intra-quarter counter when a new quarter starts
+        if new_count > already_ingested:
+            match_bundle["last_intra_quarter_pts"] = 0
         # ─────────────────────────────────────────────────────────────
 
         session = get_db_session()
         try:
+            # ── UPDATE LIVE MATCH STATUS ──────────────────────────────
             status_row = session.query(LiveMatchStatus).filter_by(match_id=match_id).first()
             if status_row is None:
                 status_row = LiveMatchStatus(match_id=match_id, last_updated=datetime.utcnow())
@@ -203,43 +255,34 @@ class LiveMatchManager:
             status_row.last_updated = datetime.utcnow()
             has_alert_this_cycle = False
 
-            snapshot = LiveMatchSnapshot(
-                match_id=match_id,
-                league_name=match_state.get("league_name"),
+            # ── SNAPSHOT (lightweight — no raw JSON) ─────────────────
+            session.add(LiveMatchSnapshot(
+                match_id=match_id, league_name=match_state.get("league_name"),
                 home_team=home_team, away_team=away_team,
                 quarters_completed=match_state["quarters_completed"],
                 minutes_elapsed_current_q=match_state["minutes_elapsed_current_q"],
                 current_total=match_state["current_total"],
                 score_diff=match_state["score_diff"],
                 minutes_remaining=match_state["minutes_remaining"],
-                raw_odds_json=None,
-                polled_at=datetime.utcnow(),
-            )
-            session.add(snapshot)
+                raw_odds_json=None, polled_at=datetime.utcnow(),
+            ))
 
-            match_bundle = self.active_matches[match_id]
-
-            # ── Full-game Home/Away ───────────────────────────────────
+            # ── FULL-GAME HOME/AWAY ───────────────────────────────────
             home_away_odds = AllSportsOddsParser.get_full_game_home_away(odds_data, match_id)
             if home_away_odds:
                 orch = match_bundle["home_away_orch"]
                 orch.wp_model.pregame_elo_diff = elo_diff
                 orch.wp_model.expected_pregame_margin = elo_diff * 0.04
-                alert = orch.evaluate_full_game(
-                    match_state, home_away_odds, elite_features=elite_features
-                )
-                if alert and self._save_alert(
-                    session, alert, match_id, home_team, away_team,
-                    "full_game_ha", None
-                ):
+                alert = orch.evaluate_full_game(match_state, home_away_odds,
+                                                 elite_features=elite_features)
+                if alert and self._save_alert(session, alert, match_id, home_team, away_team,
+                                               "full_game_ha", None):
                     has_alert_this_cycle = True
 
-            # ── Quarter Home/Away ─────────────────────────────────────
+            # ── QUARTER HOME/AWAY ─────────────────────────────────────
             current_q = match_state["quarters_completed"] + 1
             if current_q <= 4:
-                q_odds = AllSportsOddsParser.get_quarter_home_away(
-                    odds_data, match_id, current_q
-                )
+                q_odds = AllSportsOddsParser.get_quarter_home_away(odds_data, match_id, current_q)
                 if q_odds and match_state["minutes_elapsed_current_q"] >= 2.0:
                     completed = match_state["completed_quarters"]
                     prior_diff = sum(q["home"] - q["away"] for q in completed)
@@ -247,17 +290,14 @@ class LiveMatchManager:
                     q_alert = match_bundle["quarter_orch"].evaluate_current_quarter(
                         quarter_score_diff=q_diff,
                         minutes_elapsed_in_q=match_state["minutes_elapsed_current_q"],
-                        odds=q_odds,
-                        quarter_number=current_q,
+                        odds=q_odds, quarter_number=current_q,
                         elite_features=elite_features,
                     )
-                    if q_alert and self._save_alert(
-                        session, q_alert, match_id, home_team, away_team,
-                        "quarter_ha", {"quarter_number": current_q}
-                    ):
+                    if q_alert and self._save_alert(session, q_alert, match_id, home_team, away_team,
+                                                     "quarter_ha", {"quarter_number": current_q}):
                         has_alert_this_cycle = True
 
-            # ── Player Props ──────────────────────────────────────────
+            # ── PLAYER PROPS ──────────────────────────────────────────
             player_stats = AllSportsPlayerStatsParser.get_all_players_live_stats(event)
             player_orch = match_bundle["player_orch"]
             for player in player_stats:
@@ -283,16 +323,7 @@ class LiveMatchManager:
                     ):
                         has_alert_this_cycle = True
 
-            # ── Sync quarters into live total model ───────────────────
-            already_ingested = match_bundle["quarters_ingested"]
-            new_count = AllSportsLivescoreParser.sync_orchestrator_quarters(
-                match_bundle["live_total_model"],
-                match_state["completed_quarters"],
-                already_ingested,
-            )
-            match_bundle["quarters_ingested"] = new_count
-
-            # ── Odd/Even ──────────────────────────────────────────────
+            # ── ODD/EVEN ──────────────────────────────────────────────
             odd_even_odds = AllSportsOddsParser.get_odd_even(odds_data, match_id)
             if odd_even_odds and match_state["quarters_completed"] >= 1:
                 oe_alert = match_bundle["odd_even_orch"].evaluate(
@@ -303,27 +334,45 @@ class LiveMatchManager:
                     odd_even_odds,
                     pace_multiplier=pace_multiplier,
                 )
-                if oe_alert and self._save_alert(
-                    session, oe_alert, match_id, home_team, away_team,
-                    "odd_even", None
-                ):
+                if oe_alert and self._save_alert(session, oe_alert, match_id, home_team, away_team,
+                                                  "odd_even", None):
                     has_alert_this_cycle = True
 
-            # ── Highest Scoring Quarter ───────────────────────────────
-            hsq_odds = AllSportsOddsParser.get_highest_scoring_quarter_odds(
-                odds_data, match_id
-            )
+            # ── HIGHEST SCORING QUARTER ───────────────────────────────
+            hsq_odds = AllSportsOddsParser.get_highest_scoring_quarter_odds(odds_data, match_id)
             if hsq_odds and match_state["completed_quarters"]:
                 completed_totals = {
                     i + 1: q["home"] + q["away"]
                     for i, q in enumerate(match_state["completed_quarters"])
                 }
                 hsq_alert = match_bundle["hsq_orch"].evaluate(completed_totals, hsq_odds)
-                if hsq_alert and self._save_alert(
-                    session, hsq_alert, match_id, home_team, away_team,
-                    "hsq", None
+                if hsq_alert and self._save_alert(session, hsq_alert, match_id, home_team, away_team,
+                                                   "hsq", None):
+                    has_alert_this_cycle = True
+
+            # ── SYNTHETIC TOTAL (no bookmaker odds needed) ────────────
+            # Only evaluate from Q1 onwards (need some data first)
+            if match_state["quarters_completed"] >= 1 or \
+               match_state["minutes_elapsed_current_q"] >= 4.0:
+                synth_alert = match_bundle["synthetic_total_orch"].evaluate(
+                    live_total_model=match_bundle["live_total_model"],
+                    current_total=match_state["current_total"],
+                    quarters_completed=match_state["quarters_completed"],
+                    minutes_elapsed_current_q=match_state["minutes_elapsed_current_q"],
+                    pace_multiplier=pace_multiplier,
+                )
+                if synth_alert and self._save_alert(
+                    session, synth_alert, match_id, home_team, away_team,
+                    "synthetic_total",
+                    {
+                        "line": synth_alert["line"],
+                        "projected_total": synth_alert["projected_final_total"],
+                        "credible_interval": list(synth_alert["credible_interval_80pct"]),
+                    },
                 ):
                     has_alert_this_cycle = True
+                    print(f"[SYNTHETIC] {home_team} vs {away_team}: "
+                          f"{synth_alert['alert']}")
 
             status_row.has_active_alert = has_alert_this_cycle
             session.commit()
@@ -331,6 +380,9 @@ class LiveMatchManager:
         finally:
             session.close()
 
+    # =====================================================
+    # CLEANUP
+    # =====================================================
     def _cleanup_stale_matches(self, live_match_ids_this_cycle):
         session = get_db_session()
         try:
@@ -343,6 +395,9 @@ class LiveMatchManager:
         finally:
             session.close()
 
+    # =====================================================
+    # ALERT SAVING
+    # =====================================================
     def _save_alert(self, session, alert, match_id, home_team, away_team,
                      market_type, settlement_meta):
         market = alert["market"]
@@ -351,21 +406,23 @@ class LiveMatchManager:
         if not self._should_fire_alert(session, match_id, market, side):
             return False
 
-        db_alert = ValueBetAlert(
+        session.add(ValueBetAlert(
             match_id=match_id, market=market, side=side,
             blended_probability=alert.get("blended_probability") or
                                  alert.get("model_probability", 0.0),
-            offered_odds=alert["offered_odds"],
+            offered_odds=alert.get("offered_odds"),
             edge_pct=alert["edge_pct"],
-            recommended_stake=alert["recommended_stake"],
+            recommended_stake=alert.get("recommended_stake", 0.0),
             fired_at=datetime.utcnow(),
             home_team=home_team, away_team=away_team,
             market_type=market_type, settlement_meta=settlement_meta,
-        )
-        session.add(db_alert)
-        print(f"[ALERT] {home_team} vs {away_team} — {alert}")
+        ))
+        print(f"[ALERT] {home_team} vs {away_team} — {alert.get('alert', market)}")
         return True
 
+    # =====================================================
+    # AUTOMATIC SETTLEMENT
+    # =====================================================
     def _settle_finished_matches(self, finished_events):
         if not finished_events:
             return
@@ -384,9 +441,9 @@ class LiveMatchManager:
 
                 final_result = str(event.get("event_final_result", "")).strip()
                 try:
-                    home_final_str, away_final_str = final_result.split("-")
-                    home_final = int(home_final_str.strip())
-                    away_final = int(away_final_str.strip())
+                    home_str, away_str = final_result.split("-")
+                    home_final = int(home_str.strip())
+                    away_final = int(away_str.strip())
                 except (ValueError, AttributeError):
                     continue
 
@@ -439,16 +496,13 @@ class LiveMatchManager:
             return None
 
         if mtype == "hsq":
-            valid_quarters = [
-                (i + 1, q["home"] + q["away"])
-                for i, q in enumerate(quarters) if q is not None
-            ]
-            if not valid_quarters:
+            valid = [(i + 1, q["home"] + q["away"])
+                     for i, q in enumerate(quarters) if q is not None]
+            if not valid:
                 return None
-            best_q = max(valid_quarters, key=lambda x: x[1])[0]
-            predicted_q = (alert.side or "").replace("Q", "")
+            best_q = max(valid, key=lambda x: x[1])[0]
             try:
-                return int(predicted_q) == best_q
+                return int((alert.side or "").replace("Q", "")) == best_q
             except ValueError:
                 return None
 
@@ -463,15 +517,40 @@ class LiveMatchManager:
                     return p["points"] > threshold
             return None
 
+        if mtype == "synthetic_total":
+            meta = alert.settlement_meta or {}
+            line = meta.get("line")
+            if line is None:
+                return None
+            actual_total = home_final + away_final
+            if alert.side == "Over":
+                return actual_total > line
+            elif alert.side == "Under":
+                return actual_total < line
+            return None
+
         return None
 
     def _apply_settlement(self, session, alert, won: bool):
         account = get_or_create_paper_account(session, Config.STARTING_BANKROLL)
 
-        profit_loss = (
-            alert.recommended_stake * (alert.offered_odds - 1)
-            if won else -alert.recommended_stake
-        )
+        # Synthetic totals may have no bookmaker odds — use model probability
+        # to derive a reference payout only if offered_odds is available
+        if alert.offered_odds and alert.offered_odds > 1.0:
+            profit_loss = (
+                alert.recommended_stake * (alert.offered_odds - 1)
+                if won else -alert.recommended_stake
+            )
+        else:
+            # Synthetic market: use implied fair odds from model probability
+            if alert.blended_probability and alert.blended_probability > 0:
+                implied_odds = 1.0 / alert.blended_probability
+                profit_loss = (
+                    alert.recommended_stake * (implied_odds - 1)
+                    if won else -alert.recommended_stake
+                )
+            else:
+                profit_loss = 0.0
 
         alert.settled_result = won
         alert.profit_loss = round(profit_loss, 2)
