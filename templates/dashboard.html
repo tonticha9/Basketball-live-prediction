@@ -12,7 +12,7 @@
     background-size: 400% 400%; animation: gradientShift 15s ease infinite;
     color: #f0f0f0; min-height: 100vh; padding: 16px; padding-bottom: 80px;
   }
-  @keyframes gradientShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+  @keyframes gradientShift { 0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%} }
   header { text-align: center; padding: 16px 0; }
   header h1 {
     font-size: 24px;
@@ -20,58 +20,76 @@
     background-size: 300% 300%; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
     animation: textGlow 6s ease infinite;
   }
-  @keyframes textGlow { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-  .pulse-dot { display: inline-block; width: 8px; height: 8px; background: #6bff8f; border-radius: 50%; margin-right: 6px; animation: pulse 1.5s infinite; }
-  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(107,255,143,0.7); } 70% { box-shadow: 0 0 0 8px rgba(107,255,143,0); } 100% { box-shadow: 0 0 0 0 rgba(107,255,143,0); } }
+  @keyframes textGlow { 0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%} }
+  .pulse-dot { display:inline-block; width:8px; height:8px; background:#6bff8f; border-radius:50%; margin-right:6px; animation:pulse 1.5s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(107,255,143,0.7)}70%{box-shadow:0 0 0 8px rgba(107,255,143,0)}100%{box-shadow:0 0 0 0 rgba(107,255,143,0)} }
+
+  .sound-toggle {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 20px; padding: 6px 14px; cursor: pointer;
+    font-size: 12px; color: #c0c0e0; margin-top: 8px;
+    transition: all 0.2s;
+  }
+  .sound-toggle.on { background: rgba(107,255,143,0.15); color: #6bff8f; border-color: #6bff8f44; }
+
   .balance-card {
     background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 20px; padding: 24px; text-align: center; max-width: 400px; margin: 20px auto;
-    backdrop-filter: blur(10px);
+    border-radius: 20px; padding: 24px; text-align: center; max-width: 400px;
+    margin: 20px auto; backdrop-filter: blur(10px);
   }
-  .balance-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #a0a0c0; margin-bottom: 8px; }
-  .balance-card .amount { font-size: 32px; font-weight: bold; color: #4ecdc4; }
-  .change-badge { display: inline-block; margin-top: 10px; padding: 5px 14px; border-radius: 20px; font-size: 14px; font-weight: bold; }
-  .change-positive { background: rgba(107,255,143,0.15); color: #6bff8f; }
-  .change-negative { background: rgba(255,107,107,0.15); color: #ff6b6b; }
-  .change-neutral { background: rgba(160,160,192,0.15); color: #a0a0c0; }
-  .today-row { display: flex; justify-content: center; gap: 10px; margin-top: 10px; font-size: 12px; color: #a0a0c0; }
-  .stats-row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin: 20px 0; }
-  .stat-card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 14px 20px; min-width: 110px; text-align: center; backdrop-filter: blur(10px); }
-  .stat-card .label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #a0a0c0; margin-bottom: 4px; }
-  .stat-card .value { font-size: 20px; font-weight: bold; color: #f7b733; }
-  .section-title { font-size: 16px; font-weight: bold; margin: 24px 0 12px; border-left: 3px solid #4ecdc4; padding-left: 10px; color: #e0e0f0; }
-  .match-card { background: rgba(255,255,255,0.05); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; animation: fadeIn 0.4s ease-out; }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-  .match-info .teams { font-weight: bold; font-size: 14px; }
-  .match-info .meta { font-size: 12px; color: #a0a0c0; margin-top: 3px; }
-  .match-status-dot { width: 12px; height: 12px; border-radius: 50%; background: #555; flex-shrink: 0; }
-  .match-status-dot.alert-active { background: #6bff8f; animation: alertPulse 1s infinite; box-shadow: 0 0 8px #6bff8f; }
-  @keyframes alertPulse { 0% { box-shadow: 0 0 4px #6bff8f; transform: scale(1); } 50% { box-shadow: 0 0 16px #6bff8f; transform: scale(1.3); } 100% { box-shadow: 0 0 4px #6bff8f; transform: scale(1); } }
-  .no-matches, .no-alerts { text-align: center; color: #808090; padding: 30px; font-style: italic; font-size: 13px; }
-  .alert-card { background: rgba(255,255,255,0.05); border-left: 4px solid #4ecdc4; border-radius: 10px; padding: 14px; margin-bottom: 10px; animation: slideIn 0.4s ease-out; position: relative; overflow: hidden; }
-  .alert-card::before { content: ""; position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(78,205,196,0.15), transparent); animation: shimmer 3s infinite; }
-  @keyframes shimmer { 0% { left: -100%; } 100% { left: 100%; } }
-  @keyframes slideIn { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: translateX(0); } }
-  .alert-card .teams-header { font-weight: bold; font-size: 14px; color: #f0f0f0; margin-bottom: 4px; }
-  .alert-card .market { font-weight: bold; color: #f7b733; font-size: 13px; }
-  .alert-card .details { font-size: 12px; color: #c0c0e0; margin-top: 5px; line-height: 1.5; }
-  .edge-badge { display: inline-block; background: linear-gradient(90deg, #ff6b6b, #f7b733); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold; color: #1a1a2e; }
-  .settled-tag { font-size: 11px; padding: 2px 8px; border-radius: 8px; margin-top: 8px; display: inline-block; }
-  .tag-won { background: rgba(107,255,143,0.2); color: #6bff8f; }
-  .tag-lost { background: rgba(255,107,107,0.2); color: #ff6b6b; }
-  .tag-pending { background: rgba(247,183,51,0.15); color: #f7b733; }
-  .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(20,20,35,0.95); backdrop-filter: blur(10px); display: flex; justify-content: space-around; padding: 12px 0; border-top: 1px solid rgba(255,255,255,0.1); }
-  .bottom-nav a { color: #a0a0c0; text-decoration: none; font-size: 12px; text-align: center; }
-  .bottom-nav a.active { color: #4ecdc4; font-weight: bold; }
+  .balance-card .label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#a0a0c0; margin-bottom:8px; }
+  .balance-card .amount { font-size:32px; font-weight:bold; color:#4ecdc4; }
+  .change-badge { display:inline-block; margin-top:10px; padding:5px 14px; border-radius:20px; font-size:14px; font-weight:bold; }
+  .change-positive { background:rgba(107,255,143,0.15); color:#6bff8f; }
+  .change-negative { background:rgba(255,107,107,0.15); color:#ff6b6b; }
+  .change-neutral { background:rgba(160,160,192,0.15); color:#a0a0c0; }
+  .today-row { display:flex; justify-content:center; gap:10px; margin-top:10px; font-size:12px; color:#a0a0c0; }
+  .stats-row { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin:20px 0; }
+  .stat-card { background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:14px; padding:14px 20px; min-width:110px; text-align:center; backdrop-filter:blur(10px); }
+  .stat-card .label { font-size:10px; text-transform:uppercase; letter-spacing:1px; color:#a0a0c0; margin-bottom:4px; }
+  .stat-card .value { font-size:20px; font-weight:bold; color:#f7b733; }
+  .section-title { font-size:16px; font-weight:bold; margin:24px 0 12px; border-left:3px solid #4ecdc4; padding-left:10px; color:#e0e0f0; }
+  .match-card { background:rgba(255,255,255,0.05); border-radius:14px; padding:14px 16px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; animation:fadeIn 0.4s ease-out; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)} }
+  .match-info .teams { font-weight:bold; font-size:14px; }
+  .match-info .meta { font-size:12px; color:#a0a0c0; margin-top:3px; }
+  .match-status-dot { width:12px; height:12px; border-radius:50%; background:#555; flex-shrink:0; }
+  .match-status-dot.alert-active { background:#6bff8f; animation:alertPulse 1s infinite; box-shadow:0 0 8px #6bff8f; }
+  @keyframes alertPulse { 0%{box-shadow:0 0 4px #6bff8f;transform:scale(1)}50%{box-shadow:0 0 16px #6bff8f;transform:scale(1.3)}100%{box-shadow:0 0 4px #6bff8f;transform:scale(1)} }
+  .no-matches, .no-alerts { text-align:center; color:#808090; padding:30px; font-style:italic; font-size:13px; }
+  .alert-card { background:rgba(255,255,255,0.05); border-left:4px solid #4ecdc4; border-radius:10px; padding:14px; margin-bottom:10px; animation:slideIn 0.4s ease-out; position:relative; overflow:hidden; }
+  .alert-card.new-alert { border-left-color: #6bff8f; animation: slideIn 0.4s ease-out, alertGlow 2s ease-out; }
+  @keyframes alertGlow { 0%{box-shadow:0 0 20px rgba(107,255,143,0.6)}100%{box-shadow:none} }
+  .alert-card::before { content:""; position:absolute; top:0; left:-100%; width:100%; height:100%; background:linear-gradient(90deg,transparent,rgba(78,205,196,0.15),transparent); animation:shimmer 3s infinite; }
+  @keyframes shimmer { 0%{left:-100%}100%{left:100%} }
+  @keyframes slideIn { from{opacity:0;transform:translateX(-16px)}to{opacity:1;transform:translateX(0)} }
+  .alert-card .teams-header { font-weight:bold; font-size:14px; color:#f0f0f0; margin-bottom:4px; }
+  .alert-card .market { font-weight:bold; color:#f7b733; font-size:13px; }
+  .alert-card .details { font-size:12px; color:#c0c0e0; margin-top:5px; line-height:1.5; }
+  .edge-badge { display:inline-block; background:linear-gradient(90deg,#ff6b6b,#f7b733); padding:3px 10px; border-radius:12px; font-size:11px; font-weight:bold; color:#1a1a2e; }
+  .synthetic-badge { display:inline-block; background:linear-gradient(90deg,#556fb5,#4ecdc4); padding:3px 10px; border-radius:12px; font-size:11px; font-weight:bold; color:#1a1a2e; }
+  .settled-tag { font-size:11px; padding:2px 8px; border-radius:8px; margin-top:8px; display:inline-block; }
+  .tag-won { background:rgba(107,255,143,0.2); color:#6bff8f; }
+  .tag-lost { background:rgba(255,107,107,0.2); color:#ff6b6b; }
+  .tag-pending { background:rgba(247,183,51,0.15); color:#f7b733; }
+  .bottom-nav { position:fixed; bottom:0; left:0; right:0; background:rgba(20,20,35,0.95); backdrop-filter:blur(10px); display:flex; justify-content:space-around; padding:12px 0; border-top:1px solid rgba(255,255,255,0.1); }
+  .bottom-nav a { color:#a0a0c0; text-decoration:none; font-size:12px; text-align:center; }
+  .bottom-nav a.active { color:#4ecdc4; font-weight:bold; }
 </style>
 </head>
 <body>
 
 <header>
   <h1>🏀 LIVE PREDICTION ENGINE</h1>
-  <p style="color:#a0a0c0; font-size:12px; margin-top:4px;">
+  <p style="color:#a0a0c0;font-size:12px;margin-top:4px;">
     <span class="pulse-dot"></span>Paper Trading Mode — Automatic Settlement
   </p>
+  <div>
+    <button class="sound-toggle" id="soundToggle" onclick="toggleSound()">
+      🔔 Sauti: <span id="soundStatus">OFF</span>
+    </button>
+  </div>
 </header>
 
 <div class="balance-card">
@@ -81,7 +99,7 @@
     {{ '+' if overall_change > 0 else '' }}${{ "%.2f"|format(overall_change) }} tangu mwanzo
   </div>
   <div class="today-row">
-    <span>Leo: <strong id="todaysChangeVal" style="color: {{ '#6bff8f' if todays_change > 0 else ('#ff6b6b' if todays_change < 0 else '#a0a0c0') }}">
+    <span>Leo: <strong id="todaysChangeVal" style="color:{{ '#6bff8f' if todays_change > 0 else ('#ff6b6b' if todays_change < 0 else '#a0a0c0') }}">
       {{ '+' if todays_change > 0 else '' }}${{ "%.2f"|format(todays_change) }}
     </strong></span>
   </div>
@@ -117,11 +135,17 @@
       <div class="teams-header">{{ alert.home_team or '?' }} vs {{ alert.away_team or '?' }}</div>
       <div class="market">{{ alert.market }} {% if alert.side %}— {{ alert.side }}{% endif %}</div>
       <div class="details">
-        Odds: {{ alert.offered_odds }} | Prob: {{ (alert.blended_probability * 100) | round(1) }}%
-        <br>Stake: ${{ alert.recommended_stake }} | <span class="edge-badge">+{{ alert.edge_pct }}% edge</span>
+        {% if alert.offered_odds %}Odds: {{ alert.offered_odds }} | {% endif %}
+        Prob: {{ (alert.blended_probability * 100) | round(1) }}%
+        <br>Stake: ${{ alert.recommended_stake }} |
+        {% if alert.market_type == 'synthetic_total' %}
+          <span class="synthetic-badge">📊 {{ alert.edge_pct }}% conf</span>
+        {% else %}
+          <span class="edge-badge">+{{ alert.edge_pct }}% edge</span>
+        {% endif %}
       </div>
       {% if alert.settled_result is none %}
-        <span class="settled-tag tag-pending">⏳ Inasubiri mchezo umalizike...</span>
+        <span class="settled-tag tag-pending">⏳ Inasubiri...</span>
       {% else %}
         <span class="settled-tag {{ 'tag-won' if alert.settled_result else 'tag-lost' }}">
           {{ 'WON' if alert.settled_result else 'LOST' }} — P/L: ${{ alert.profit_loss }}
@@ -141,6 +165,61 @@
 </nav>
 
 <script>
+// ── SOUND SYSTEM ─────────────────────────────────────────
+let soundEnabled = localStorage.getItem('soundEnabled') === 'true';
+let knownAlertIds = new Set({{ alerts | map(attribute='id') | list | tojson }});
+let audioCtx = null;
+
+function updateSoundBtn() {
+  const btn = document.getElementById('soundToggle');
+  const status = document.getElementById('soundStatus');
+  if (soundEnabled) {
+    btn.classList.add('on');
+    status.textContent = 'ON';
+  } else {
+    btn.classList.remove('on');
+    status.textContent = 'OFF';
+  }
+}
+
+function toggleSound() {
+  soundEnabled = !soundEnabled;
+  localStorage.setItem('soundEnabled', soundEnabled);
+  updateSoundBtn();
+  if (soundEnabled) playAlertSound(220, 0.1); // test beep
+}
+
+function playAlertSound(frequency = 880, duration = 0.3) {
+  if (!soundEnabled) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+    oscillator.frequency.exponentialRampToValueAtTime(frequency * 1.5, audioCtx.currentTime + duration * 0.5);
+    gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    oscillator.start(audioCtx.currentTime);
+    oscillator.stop(audioCtx.currentTime + duration);
+    // Triple beep for emphasis
+    setTimeout(() => {
+      const osc2 = audioCtx.createOscillator();
+      const gain2 = audioCtx.createGain();
+      osc2.connect(gain2); gain2.connect(audioCtx.destination);
+      osc2.type = 'sine'; osc2.frequency.value = frequency * 1.2;
+      gain2.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gain2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+      osc2.start(); osc2.stop(audioCtx.currentTime + duration);
+    }, duration * 400);
+  } catch(e) { console.log('Sound failed:', e); }
+}
+
+updateSoundBtn();
+
+// ── DASHBOARD REFRESH ─────────────────────────────────────
 async function refreshDashboard() {
   try {
     const res = await fetch('/api/dashboard_data');
@@ -160,44 +239,48 @@ async function refreshDashboard() {
     todayEl.textContent = `${tc > 0 ? '+' : ''}$${tc.toFixed(2)}`;
     todayEl.style.color = tc > 0 ? '#6bff8f' : tc < 0 ? '#ff6b6b' : '#a0a0c0';
 
+    // Live matches
     const liveSection = document.getElementById('liveMatchesSection');
-    if (data.live_matches.length === 0) {
-      liveSection.innerHTML = '<div class="no-matches">Hakuna mechi live sasa hivi...</div>';
-    } else {
-      liveSection.innerHTML = data.live_matches.map(m => `
-        <div class="match-card">
-          <div class="match-info">
-            <div class="teams">${m.home_team} vs ${m.away_team}</div>
-            <div class="meta">${m.league_name || ''} | Q${m.quarters_completed + 1} | Total: ${m.current_total}</div>
-          </div>
-          <div class="match-status-dot ${m.has_active_alert ? 'alert-active' : ''}"></div>
-        </div>
-      `).join('');
+    liveSection.innerHTML = data.live_matches.length === 0
+      ? '<div class="no-matches">Hakuna mechi live sasa hivi...</div>'
+      : data.live_matches.map(m => `
+          <div class="match-card">
+            <div class="match-info">
+              <div class="teams">${m.home_team} vs ${m.away_team}</div>
+              <div class="meta">${m.league_name||''} | Q${m.quarters_completed+1} | Total: ${m.current_total}</div>
+            </div>
+            <div class="match-status-dot ${m.has_active_alert ? 'alert-active' : ''}"></div>
+          </div>`).join('');
+
+    // Alerts — detect new ones and play sound
+    const newAlerts = data.alerts.filter(a => !knownAlertIds.has(a.id));
+    if (newAlerts.length > 0) {
+      playAlertSound(880, 0.4);
+      newAlerts.forEach(a => knownAlertIds.add(a.id));
     }
 
     const alertsSection = document.getElementById('alertsSection');
-    if (data.alerts.length === 0) {
-      alertsSection.innerHTML = '<div class="no-alerts">Hakuna alerts bado — subiri mchezo uwe live...</div>';
-    } else {
-      alertsSection.innerHTML = data.alerts.map(a => `
-        <div class="alert-card" data-id="${a.id}">
-          <div class="teams-header">${a.home_team} vs ${a.away_team}</div>
-          <div class="market">${a.market}${a.side ? ' — ' + a.side : ''}</div>
-          <div class="details">
-            Odds: ${a.odds} | Prob: ${(a.probability * 100).toFixed(1)}%
-            <br>Stake: $${a.stake} | <span class="edge-badge">+${a.edge_pct}% edge</span>
-          </div>
-          ${a.settled_result === null ? `
-            <span class="settled-tag tag-pending">⏳ Inasubiri mchezo umalizike...</span>` : `
-            <span class="settled-tag ${a.settled_result ? 'tag-won' : 'tag-lost'}">
-              ${a.settled_result ? 'WON' : 'LOST'} — P/L: $${a.profit_loss}
-            </span>`}
-        </div>
-      `).join('');
-    }
-  } catch (e) {
-    console.error('Refresh failed', e);
-  }
+    alertsSection.innerHTML = data.alerts.length === 0
+      ? '<div class="no-alerts">Hakuna alerts bado — subiri mchezo uwe live...</div>'
+      : data.alerts.map(a => `
+          <div class="alert-card ${newAlerts.some(n => n.id === a.id) ? 'new-alert' : ''}" data-id="${a.id}">
+            <div class="teams-header">${a.home_team} vs ${a.away_team}</div>
+            <div class="market">${a.market}${a.side ? ' — ' + a.side : ''}</div>
+            <div class="details">
+              ${a.odds ? `Odds: ${a.odds} | ` : ''}Prob: ${(a.probability * 100).toFixed(1)}%
+              <br>Stake: $${a.stake} |
+              ${a.market_type === 'synthetic_total'
+                ? `<span class="synthetic-badge">📊 ${a.edge_pct}% conf</span>`
+                : `<span class="edge-badge">+${a.edge_pct}% edge</span>`}
+            </div>
+            ${a.settled_result === null
+              ? '<span class="settled-tag tag-pending">⏳ Inasubiri...</span>'
+              : `<span class="settled-tag ${a.settled_result ? 'tag-won' : 'tag-lost'}">
+                  ${a.settled_result ? 'WON' : 'LOST'} — P/L: $${a.profit_loss}
+                 </span>`}
+          </div>`).join('');
+
+  } catch(e) { console.error('Refresh failed', e); }
 }
 
 refreshDashboard();
