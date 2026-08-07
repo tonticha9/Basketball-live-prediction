@@ -1,15 +1,7 @@
 """
 models.py
-SQLAlchemy models. All tables prefixed 'bball_' to safely coexist
-with your existing tennis tables in the same Postgres database.
-
-UPDATED:
-- ValueBetAlert: added home_team/away_team (display) and
-  market_type/settlement_meta (automatic settlement)
-- RecentAlertKey: database-backed alert deduplication (survives
-  process restarts, unlike an in-memory Python dict)
-- Safe migration step adds new columns to already-existing tables
-  without dropping data
+SQLAlchemy models. All tables prefixed 'bball_'.
+Includes AdminSettings for runtime-adjustable parameters.
 """
 
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, JSON, text
@@ -22,7 +14,6 @@ Base = declarative_base()
 
 class LiveMatchSnapshot(Base):
     __tablename__ = "bball_live_match_snapshots"
-
     id = Column(Integer, primary_key=True)
     match_id = Column(String, index=True, nullable=False)
     league_name = Column(String)
@@ -33,13 +24,12 @@ class LiveMatchSnapshot(Base):
     current_total = Column(Integer)
     score_diff = Column(Integer)
     minutes_remaining = Column(Float)
-    raw_odds_json = Column(JSON)  # intentionally left unpopulated now (memory optimization)
+    raw_odds_json = Column(JSON)
     polled_at = Column(DateTime, nullable=False)
 
 
 class ValueBetAlert(Base):
     __tablename__ = "bball_value_bet_alerts"
-
     id = Column(Integer, primary_key=True)
     match_id = Column(String, index=True, nullable=False)
     market = Column(String, nullable=False)
@@ -49,12 +39,10 @@ class ValueBetAlert(Base):
     edge_pct = Column(Float)
     recommended_stake = Column(Float)
     fired_at = Column(DateTime, nullable=False)
-
     closing_odds = Column(Float, nullable=True)
     settled_result = Column(Boolean, nullable=True)
     profit_loss = Column(Float, nullable=True)
     clv_pct = Column(Float, nullable=True)
-
     home_team = Column(String, nullable=True)
     away_team = Column(String, nullable=True)
     market_type = Column(String, nullable=True)
@@ -63,7 +51,6 @@ class ValueBetAlert(Base):
 
 class TeamStrengthCache(Base):
     __tablename__ = "bball_team_strength_cache"
-
     id = Column(Integer, primary_key=True)
     team_name = Column(String, unique=True, index=True)
     wins = Column(Integer)
@@ -73,7 +60,6 @@ class TeamStrengthCache(Base):
 
 class PaperTradingAccount(Base):
     __tablename__ = "bball_paper_trading_account"
-
     id = Column(Integer, primary_key=True)
     current_balance = Column(Float, nullable=False)
     starting_balance = Column(Float, nullable=False)
@@ -85,7 +71,6 @@ class PaperTradingAccount(Base):
 
 class User(Base):
     __tablename__ = "bball_users"
-
     id = Column(Integer, primary_key=True)
     username = Column(String, unique=True, nullable=False)
     first_seen = Column(DateTime, nullable=False)
@@ -94,7 +79,6 @@ class User(Base):
 
 class APIKeySettings(Base):
     __tablename__ = "bball_api_key_settings"
-
     id = Column(Integer, primary_key=True)
     provider_name = Column(String, nullable=False, default="AllSportsAPI")
     api_key = Column(String, nullable=True)
@@ -105,7 +89,6 @@ class APIKeySettings(Base):
 
 class LiveMatchStatus(Base):
     __tablename__ = "bball_live_match_status"
-
     id = Column(Integer, primary_key=True)
     match_id = Column(String, unique=True, index=True, nullable=False)
     home_team = Column(String)
@@ -119,19 +102,29 @@ class LiveMatchStatus(Base):
 
 
 class RecentAlertKey(Base):
-    """
-    Database-backed alert deduplication. Replaces the old in-memory
-    Python dict approach — cooldowns now survive process restarts,
-    which matter on low-RAM instances (like Fly.io free tier) where
-    OOM kills can restart the worker frequently.
-    """
+    """Database-backed dedup — survives process restarts."""
     __tablename__ = "bball_recent_alert_keys"
-
     id = Column(Integer, primary_key=True)
     alert_key = Column(String, unique=True, index=True, nullable=False)
     last_fired_at = Column(DateTime, nullable=False)
 
 
+class AdminSettings(Base):
+    """
+    Admin-adjustable runtime settings stored in DB.
+    Changes take effect on the next poll cycle without redeploying.
+    """
+    __tablename__ = "bball_admin_settings"
+    id = Column(Integer, primary_key=True)
+    ev_threshold = Column(Float, nullable=False, default=0.04)
+    bankroll = Column(Float, nullable=False, default=1000000.0)
+    poll_interval = Column(Integer, nullable=False, default=10)
+    updated_at = Column(DateTime, nullable=False)
+
+
+# =====================================================
+# HELPER FUNCTIONS
+# =====================================================
 def get_or_create_paper_account(session, starting_balance: float):
     account = session.query(PaperTradingAccount).first()
     if account is None:
@@ -156,10 +149,25 @@ def get_or_create_api_key_settings(session):
     return settings
 
 
+def get_or_create_admin_settings(session, config):
+    settings = session.query(AdminSettings).first()
+    if settings is None:
+        settings = AdminSettings(
+            ev_threshold=float(getattr(config, 'EV_ALERT_THRESHOLD', 0.04)),
+            bankroll=float(getattr(config, 'STARTING_BANKROLL', 1000000.0)),
+            poll_interval=int(getattr(config, 'POLL_INTERVAL_SECONDS', 10)),
+            updated_at=datetime.utcnow(),
+        )
+        session.add(settings)
+        session.commit()
+    return settings
+
+
 def register_user_visit(session, username: str):
     user = session.query(User).filter_by(username=username).first()
     if user is None:
-        user = User(username=username, first_seen=datetime.utcnow(), last_seen=datetime.utcnow())
+        user = User(username=username, first_seen=datetime.utcnow(),
+                    last_seen=datetime.utcnow())
         session.add(user)
     else:
         user.last_seen = datetime.utcnow()
@@ -167,16 +175,14 @@ def register_user_visit(session, username: str):
     return user
 
 
+# =====================================================
+# ENGINE & SESSION
+# =====================================================
 engine = create_engine(Config.DATABASE_URL, **Config.SQLALCHEMY_ENGINE_OPTIONS)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
 def _run_safe_migrations():
-    """
-    Adds new columns to already-existing tables. Base.metadata.create_all()
-    only creates brand-new tables — it does NOT alter existing ones, so
-    this manual step is required whenever columns are added later.
-    """
     migration_statements = [
         "ALTER TABLE bball_value_bet_alerts ADD COLUMN IF NOT EXISTS home_team VARCHAR",
         "ALTER TABLE bball_value_bet_alerts ADD COLUMN IF NOT EXISTS away_team VARCHAR",
@@ -189,13 +195,10 @@ def _run_safe_migrations():
                 conn.execute(text(stmt))
                 conn.commit()
             except Exception as e:
-                print(f"[migration] Skipped/failed: {stmt} — {e}")
+                print(f"[migration] Skipped: {stmt[:60]} — {e}")
 
 
 def init_db():
-    """Creates all bball_ tables if they don't exist yet (including the
-    new RecentAlertKey table), then runs safe column migrations for
-    already-existing tables. Safe to call repeatedly on every startup."""
     Base.metadata.create_all(bind=engine)
     _run_safe_migrations()
 
