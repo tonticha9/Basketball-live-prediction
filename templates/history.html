@@ -3,51 +3,49 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>📊 History — Live Prediction Engine</title>
+<title>📊 History</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  * { box-sizing:border-box; margin:0; padding:0; }
   body {
-    font-family: 'Segoe UI', sans-serif;
-    background: linear-gradient(-45deg, #0f0c29, #302b63, #24243e, #1a1a2e);
-    background-size: 400% 400%; animation: gradientShift 15s ease infinite;
-    color: #f0f0f0; min-height: 100vh; padding: 16px; padding-bottom: 80px;
+    font-family:'Segoe UI',sans-serif;
+    background:linear-gradient(-45deg,#0f0c29,#302b63,#24243e,#1a1a2e);
+    background-size:400% 400%; animation:gradientShift 15s ease infinite;
+    color:#f0f0f0; min-height:100vh; padding:16px; padding-bottom:80px;
   }
-  @keyframes gradientShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-  header { text-align: center; padding: 16px 0; }
-  header h1 {
-    font-size: 22px;
-    background: linear-gradient(90deg, #ff6b6b, #f7b733, #4ecdc4, #556fb5);
-    background-size: 300% 300%; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    animation: textGlow 6s ease infinite;
-  }
-  @keyframes textGlow { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-  .filter-row { display: flex; gap: 8px; justify-content: center; margin: 16px 0; flex-wrap: wrap; }
-  .filter-btn { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: #c0c0e0; padding: 8px 16px; border-radius: 20px; font-size: 12px; cursor: pointer; }
-  .filter-btn.active { background: linear-gradient(90deg, #4ecdc4, #556fb5); color: #0f0c29; font-weight: bold; border-color: transparent; }
-  .overall-summary { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 20px; padding: 20px; margin: 16px auto; max-width: 500px; backdrop-filter: blur(10px); }
-  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
-  .summary-item { text-align: center; }
-  .summary-item .label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #a0a0c0; }
-  .summary-item .value { font-size: 20px; font-weight: bold; margin-top: 4px; }
-  .val-green { color: #6bff8f; } .val-red { color: #ff6b6b; } .val-yellow { color: #f7b733; } .val-teal { color: #4ecdc4; }
-  .section-title { font-size: 15px; font-weight: bold; margin: 20px 0 10px; border-left: 3px solid #4ecdc4; padding-left: 10px; }
-  .day-card { background: rgba(255,255,255,0.05); border-radius: 14px; margin-bottom: 12px; overflow: hidden; animation: fadeIn 0.4s ease-out; }
-  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-  .day-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; cursor: pointer; }
-  .day-header .date { font-weight: bold; font-size: 14px; }
-  .day-header .meta { font-size: 11px; color: #a0a0c0; margin-top: 2px; }
-  .day-pl { font-size: 16px; font-weight: bold; }
-  .day-bets { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; padding: 0 16px; }
-  .day-bets.expanded { max-height: 1200px; padding-bottom: 12px; }
-  .bet-row { display: flex; flex-direction: column; padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.08); font-size: 12px; }
-  .bet-row .bet-teams { font-weight: bold; color: #f0f0f0; }
-  .bet-row .bet-line { display: flex; justify-content: space-between; margin-top: 3px; }
-  .bet-row .bet-info { color: #c0c0e0; }
-  .bet-row .bet-pl { font-weight: bold; }
-  .no-data { text-align: center; color: #808090; padding: 40px; font-style: italic; }
-  .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(20,20,35,0.95); backdrop-filter: blur(10px); display: flex; justify-content: space-around; padding: 12px 0; border-top: 1px solid rgba(255,255,255,0.1); }
-  .bottom-nav a { color: #a0a0c0; text-decoration: none; font-size: 12px; text-align: center; }
-  .bottom-nav a.active { color: #4ecdc4; font-weight: bold; }
+  @keyframes gradientShift{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+  header{text-align:center;padding:16px 0;}
+  header h1{font-size:22px;background:linear-gradient(90deg,#ff6b6b,#f7b733,#4ecdc4,#556fb5);background-size:300% 300%;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:textGlow 6s ease infinite;}
+  @keyframes textGlow{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+  .filter-row{display:flex;gap:8px;justify-content:center;margin:16px 0;flex-wrap:wrap;}
+  .filter-btn{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#c0c0e0;padding:8px 16px;border-radius:20px;font-size:12px;cursor:pointer;}
+  .filter-btn.active{background:linear-gradient(90deg,#4ecdc4,#556fb5);color:#0f0c29;font-weight:bold;border-color:transparent;}
+  .overall-summary{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:20px;padding:20px;margin:16px auto;max-width:500px;backdrop-filter:blur(10px);}
+  .summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px;}
+  .summary-item{text-align:center;}
+  .summary-item .label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#a0a0c0;}
+  .summary-item .value{font-size:20px;font-weight:bold;margin-top:4px;}
+  .val-green{color:#6bff8f;} .val-red{color:#ff6b6b;} .val-yellow{color:#f7b733;} .val-teal{color:#4ecdc4;}
+  .chart-container{background:rgba(255,255,255,0.05);border-radius:16px;padding:16px;margin:16px 0;max-width:500px;margin-left:auto;margin-right:auto;}
+  .chart-title{font-size:13px;color:#a0a0c0;text-align:center;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px;}
+  .section-title{font-size:15px;font-weight:bold;margin:20px 0 10px;border-left:3px solid #4ecdc4;padding-left:10px;}
+  .day-card{background:rgba(255,255,255,0.05);border-radius:14px;margin-bottom:12px;overflow:hidden;animation:fadeIn 0.4s ease-out;}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+  .day-header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;cursor:pointer;}
+  .day-header .date{font-weight:bold;font-size:14px;}
+  .day-header .meta{font-size:11px;color:#a0a0c0;margin-top:2px;}
+  .day-pl{font-size:16px;font-weight:bold;}
+  .day-bets{max-height:0;overflow:hidden;transition:max-height 0.3s ease;padding:0 16px;}
+  .day-bets.expanded{max-height:1200px;padding-bottom:12px;}
+  .bet-row{display:flex;flex-direction:column;padding:8px 0;border-top:1px solid rgba(255,255,255,0.08);font-size:12px;}
+  .bet-row .bet-teams{font-weight:bold;color:#f0f0f0;}
+  .bet-row .bet-line{display:flex;justify-content:space-between;margin-top:3px;}
+  .bet-row .bet-info{color:#c0c0e0;}
+  .bet-row .bet-pl{font-weight:bold;}
+  .no-data{text-align:center;color:#808090;padding:40px;font-style:italic;}
+  .bottom-nav{position:fixed;bottom:0;left:0;right:0;background:rgba(20,20,35,0.95);backdrop-filter:blur(10px);display:flex;justify-content:space-around;padding:12px 0;border-top:1px solid rgba(255,255,255,0.1);}
+  .bottom-nav a{color:#a0a0c0;text-decoration:none;font-size:12px;text-align:center;}
+  .bottom-nav a.active{color:#4ecdc4;font-weight:bold;}
 </style>
 </head>
 <body>
@@ -61,14 +59,25 @@
   <button class="filter-btn" data-days="9999">Zote</button>
 </div>
 
-<div class="overall-summary" id="overallSummary">
-  <div style="text-align:center; color:#a0a0c0; font-size:12px;">Overall Performance</div>
+<div class="overall-summary">
+  <div style="text-align:center;color:#a0a0c0;font-size:12px;">Overall Performance</div>
   <div class="summary-grid">
     <div class="summary-item"><div class="label">Total Bets</div><div class="value val-teal" id="sumBets">-</div></div>
     <div class="summary-item"><div class="label">Win Rate</div><div class="value val-yellow" id="sumWinRate">-</div></div>
     <div class="summary-item"><div class="label">Total P/L</div><div class="value" id="sumPL">-</div></div>
     <div class="summary-item"><div class="label">ROI</div><div class="value" id="sumROI">-</div></div>
   </div>
+</div>
+
+<!-- CHARTS -->
+<div class="chart-container">
+  <div class="chart-title">📈 Balance Growth</div>
+  <canvas id="balanceChart" height="160"></canvas>
+</div>
+
+<div class="chart-container">
+  <div class="chart-title">📊 Daily P/L</div>
+  <canvas id="plChart" height="140"></canvas>
 </div>
 
 <div class="section-title">Historia ya Kila Siku</div>
@@ -82,13 +91,82 @@
 
 <script>
 let currentDays = 30;
+let balanceChartInstance = null;
+let plChartInstance = null;
+
 function plClass(val) { return val > 0 ? 'val-green' : (val < 0 ? 'val-red' : ''); }
+
+function renderCharts(dailySummary, startingBalance) {
+  const days = [...dailySummary].reverse(); // chronological order
+
+  // Build cumulative balance curve
+  let runningBalance = startingBalance;
+  const balanceData = days.map(d => {
+    runningBalance += d.profit_loss;
+    return { x: d.date, y: parseFloat(runningBalance.toFixed(2)) };
+  });
+
+  const plData = days.map(d => d.profit_loss);
+  const plColors = plData.map(v => v >= 0 ? 'rgba(107,255,143,0.8)' : 'rgba(255,107,107,0.8)');
+  const labels = days.map(d => d.date.slice(5)); // MM-DD
+
+  // Balance chart
+  if (balanceChartInstance) balanceChartInstance.destroy();
+  const bCtx = document.getElementById('balanceChart').getContext('2d');
+  balanceChartInstance = new Chart(bCtx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: balanceData.map(d => d.y),
+        borderColor: '#4ecdc4',
+        backgroundColor: 'rgba(78,205,196,0.1)',
+        borderWidth: 2,
+        fill: true,
+        tension: 0.4,
+        pointRadius: 3,
+        pointBackgroundColor: '#4ecdc4',
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#a0a0c0', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        y: { ticks: { color: '#a0a0c0', font: { size: 10 }, callback: v => `$${v.toLocaleString()}` }, grid: { color: 'rgba(255,255,255,0.05)' } }
+      }
+    }
+  });
+
+  // P/L bar chart
+  if (plChartInstance) plChartInstance.destroy();
+  const pCtx = document.getElementById('plChart').getContext('2d');
+  plChartInstance = new Chart(pCtx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: plData,
+        backgroundColor: plColors,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#a0a0c0', font: { size: 10 } }, grid: { display: false } },
+        y: { ticks: { color: '#a0a0c0', font: { size: 10 }, callback: v => `$${v.toLocaleString()}` }, grid: { color: 'rgba(255,255,255,0.05)' } }
+      }
+    }
+  });
+}
 
 async function loadHistory(days) {
   const res = await fetch(`/api/history_data?days=${days}`);
   const data = await res.json();
-
   const o = data.overall;
+
   document.getElementById('sumBets').textContent = o.n_bets;
   document.getElementById('sumWinRate').textContent = `${o.win_rate}%`;
 
@@ -100,9 +178,14 @@ async function loadHistory(days) {
   roiEl.textContent = `${o.roi_pct}%`;
   roiEl.className = 'value ' + plClass(o.roi_pct);
 
+  // Render charts
+  if (data.daily_summary.length > 0) {
+    renderCharts(data.daily_summary, o.starting_balance);
+  }
+
   const container = document.getElementById('dailyBreakdown');
   if (data.daily_summary.length === 0) {
-    container.innerHTML = '<div class="no-data">Hakuna bets zilizosettled bado kwenye kipindi hiki.</div>';
+    container.innerHTML = '<div class="no-data">Hakuna bets zilizosettled bado.</div>';
     return;
   }
 
@@ -120,14 +203,12 @@ async function loadHistory(days) {
           <div class="bet-row">
             <div class="bet-teams">${b.home_team} vs ${b.away_team}</div>
             <div class="bet-line">
-              <div class="bet-info">${b.time} | ${b.market}${b.side ? ' — ' + b.side : ''} @ ${b.odds}</div>
+              <div class="bet-info">${b.time} | ${b.market}${b.side ? ' — '+b.side : ''} @ ${b.odds || '—'}</div>
               <div class="bet-pl ${plClass(b.profit_loss)}">${b.won ? '✓' : '✗'} $${b.profit_loss.toFixed(2)}</div>
             </div>
-          </div>
-        `).join('')}
+          </div>`).join('')}
       </div>
-    </div>
-  `).join('');
+    </div>`).join('');
 }
 
 function toggleDay(idx) {
@@ -145,6 +226,5 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
 
 loadHistory(currentDays);
 </script>
-
 </body>
 </html>
