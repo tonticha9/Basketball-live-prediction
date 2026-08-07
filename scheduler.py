@@ -74,18 +74,23 @@ class LiveMatchManager:
     # =====================================================
     def _fetch(self, params, api_key):
         params["APIkey"] = api_key
-        resp = requests.get(self.base_url, params=params, timeout=15)
-        resp.raise_for_status()
+        try:
+            resp = requests.get(self.base_url, params=params, timeout=15)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            print(f"[_fetch] Request failed: {e}")
+            return {"result": {}}
         try:
             data = resp.json()
         except ValueError:
             print(f"[_fetch] Not valid JSON: {resp.text[:200]}")
             return {"result": {}}
         if not isinstance(data, dict):
-            print(f"[_fetch] Unexpected type: {type(data).__name__}")
+            print(f"[_fetch] Not a dict ({type(data).__name__}): {repr(data)[:200]}")
             return {"result": {}}
         if data.get("success") == 0:
             print(f"[_fetch] success=0: {repr(data)[:200]}")
+            return {"result": {}}
         return data
 
     # =====================================================
@@ -209,8 +214,13 @@ class LiveMatchManager:
 
         try:
             odds_data = self._fetch({"met": "Odds", "matchId": match_id}, api_key)
-        except requests.RequestException as e:
-            print(f"[_process_match] Odds fetch failed {match_id}: {e}")
+        except Exception as e:
+            print(f"[_process_match] Odds fetch error {match_id}: {e}")
+            odds_data = {"result": {}}
+
+        # Safety check — ensure odds_data is always a dict
+        if not isinstance(odds_data, dict):
+            print(f"[_process_match] odds_data not dict for {match_id}, skipping odds")
             odds_data = {"result": {}}
 
         home_team = match_state.get("home_team")
