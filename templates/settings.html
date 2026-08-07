@@ -3,133 +3,69 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>⚙️ Settings — Live Prediction Engine</title>
+<title>⚙️ Settings</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-
+  * { box-sizing:border-box; margin:0; padding:0; }
   body {
-    font-family: 'Segoe UI', sans-serif;
-    background: linear-gradient(-45deg, #0f0c29, #302b63, #24243e, #1a1a2e);
-    background-size: 400% 400%;
-    animation: gradientShift 15s ease infinite;
-    color: #f0f0f0;
-    min-height: 100vh;
-    padding: 16px;
-    padding-bottom: 80px;
+    font-family:'Segoe UI',sans-serif;
+    background:linear-gradient(-45deg,#0f0c29,#302b63,#24243e,#1a1a2e);
+    background-size:400% 400%; animation:gradientShift 15s ease infinite;
+    color:#f0f0f0; min-height:100vh; padding:16px; padding-bottom:80px;
   }
-
-  @keyframes gradientShift {
-    0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; }
-  }
-
-  header { text-align: center; padding: 16px 0; }
-  header h1 {
-    font-size: 22px;
-    background: linear-gradient(90deg, #ff6b6b, #f7b733, #4ecdc4, #556fb5);
-    background-size: 300% 300%;
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    animation: textGlow 6s ease infinite;
-  }
-  @keyframes textGlow { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-
-  .card {
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 18px; padding: 20px; margin: 16px auto; max-width: 500px;
-    backdrop-filter: blur(10px);
-  }
-
-  .card h2 { font-size: 15px; margin-bottom: 14px; color: #4ecdc4; }
-
-  .status-badge {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: bold;
-    margin-bottom: 16px;
-  }
-  .status-active { background: rgba(107,255,143,0.15); color: #6bff8f; }
-  .status-inactive { background: rgba(255,107,107,0.15); color: #ff6b6b; }
-
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
-  .dot-active { background: #6bff8f; animation: pulse 1.5s infinite; }
-  .dot-inactive { background: #ff6b6b; }
-  @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(107,255,143,0.7); }
-    70% { box-shadow: 0 0 0 8px rgba(107,255,143,0); }
-    100% { box-shadow: 0 0 0 0 rgba(107,255,143,0); }
-  }
-
-  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #a0a0c0; margin: 12px 0 6px; }
-
-  input, select {
-    width: 100%; padding: 12px; background: rgba(255,255,255,0.08);
-    border: 1px solid rgba(255,255,255,0.15); border-radius: 10px;
-    color: #f0f0f0; font-size: 14px;
-  }
-
-  button {
-    margin-top: 16px; width: 100%; padding: 14px;
-    border: none; border-radius: 10px; font-weight: bold; font-size: 14px;
-    cursor: pointer; transition: opacity 0.2s;
-  }
-  .btn-save { background: linear-gradient(90deg, #4ecdc4, #556fb5); color: #0f0c29; }
-  .btn-clear { background: rgba(255,107,107,0.15); color: #ff6b6b; margin-top: 10px; }
-  button:hover { opacity: 0.85; }
-
-  .expiry-info {
-    font-size: 12px; color: #a0a0c0; margin-top: 10px;
-    padding: 10px; background: rgba(255,255,255,0.04); border-radius: 8px;
-  }
-
-  .user-row {
-    display: flex; justify-content: space-between; padding: 10px 0;
-    border-top: 1px solid rgba(255,255,255,0.08); font-size: 12px;
-  }
-  .user-row .username { color: #f0f0f0; font-weight: bold; }
-  .user-row .times { color: #a0a0c0; font-size: 11px; }
-
-  .no-data { text-align: center; color: #808090; padding: 20px; font-style: italic; font-size: 13px; }
-
-  .toast {
-    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
-    background: rgba(107,255,143,0.9); color: #0f0c29; padding: 10px 20px;
-    border-radius: 10px; font-size: 13px; font-weight: bold;
-    display: none; z-index: 100; animation: slideDown 0.3s ease-out;
-  }
-  .toast.error { background: rgba(255,107,107,0.9); }
-  @keyframes slideDown { from { opacity: 0; transform: translate(-50%, -10px); } to { opacity: 1; transform: translate(-50%, 0); } }
-
-  .bottom-nav {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    background: rgba(20,20,35,0.95); backdrop-filter: blur(10px);
-    display: flex; justify-content: space-around; padding: 12px 0;
-    border-top: 1px solid rgba(255,255,255,0.1);
-  }
-  .bottom-nav a { color: #a0a0c0; text-decoration: none; font-size: 12px; text-align: center; }
-  .bottom-nav a.active { color: #4ecdc4; font-weight: bold; }
+  @keyframes gradientShift{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+  header{text-align:center;padding:16px 0;}
+  header h1{font-size:22px;background:linear-gradient(90deg,#ff6b6b,#f7b733,#4ecdc4,#556fb5);background-size:300% 300%;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:textGlow 6s ease infinite;}
+  @keyframes textGlow{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+  .card{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:20px;margin:16px auto;max-width:500px;backdrop-filter:blur(10px);}
+  .card h2{font-size:15px;margin-bottom:14px;color:#4ecdc4;}
+  .status-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:bold;margin-bottom:16px;}
+  .status-active{background:rgba(107,255,143,0.15);color:#6bff8f;}
+  .status-inactive{background:rgba(255,107,107,0.15);color:#ff6b6b;}
+  .status-dot{width:8px;height:8px;border-radius:50%;}
+  .dot-active{background:#6bff8f;animation:pulse 1.5s infinite;}
+  .dot-inactive{background:#ff6b6b;}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(107,255,143,0.7)}70%{box-shadow:0 0 0 8px rgba(107,255,143,0)}100%{box-shadow:0 0 0 0 rgba(107,255,143,0)}}
+  label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#a0a0c0;margin:12px 0 6px;}
+  input,select{width:100%;padding:12px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#f0f0f0;font-size:14px;}
+  .admin-row{display:flex;gap:10px;align-items:flex-end;}
+  .admin-row > div{flex:1;}
+  .admin-row input{width:100%;}
+  button{margin-top:16px;width:100%;padding:14px;border:none;border-radius:10px;font-weight:bold;font-size:14px;cursor:pointer;transition:opacity 0.2s;}
+  .btn-save{background:linear-gradient(90deg,#4ecdc4,#556fb5);color:#0f0c29;}
+  .btn-clear{background:rgba(255,107,107,0.15);color:#ff6b6b;margin-top:10px;}
+  .btn-admin{background:linear-gradient(90deg,#f7b733,#ff6b6b);color:#0f0c29;}
+  button:hover{opacity:0.85;}
+  .expiry-info{font-size:12px;color:#a0a0c0;margin-top:10px;padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;}
+  .user-row{display:flex;justify-content:space-between;padding:10px 0;border-top:1px solid rgba(255,255,255,0.08);font-size:12px;}
+  .user-row .username{color:#f0f0f0;font-weight:bold;}
+  .user-row .times{color:#a0a0c0;font-size:11px;}
+  .no-data{text-align:center;color:#808090;padding:20px;font-style:italic;font-size:13px;}
+  .toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:rgba(107,255,143,0.9);color:#0f0c29;padding:10px 20px;border-radius:10px;font-size:13px;font-weight:bold;display:none;z-index:100;animation:slideDown 0.3s ease-out;}
+  .toast.error{background:rgba(255,107,107,0.9);}
+  @keyframes slideDown{from{opacity:0;transform:translate(-50%,-10px)}to{opacity:1;transform:translate(-50%,0)}}
+  .current-val{font-size:11px;color:#f7b733;margin-top:4px;}
+  .bottom-nav{position:fixed;bottom:0;left:0;right:0;background:rgba(20,20,35,0.95);backdrop-filter:blur(10px);display:flex;justify-content:space-around;padding:12px 0;border-top:1px solid rgba(255,255,255,0.1);}
+  .bottom-nav a{color:#a0a0c0;text-decoration:none;font-size:12px;text-align:center;}
+  .bottom-nav a.active{color:#4ecdc4;font-weight:bold;}
 </style>
 </head>
 <body>
 
 <header><h1>⚙️ SETTINGS</h1></header>
-
 <div class="toast" id="toast"></div>
 
+<!-- API KEY -->
 <div class="card">
   <h2>🔑 AllSportsAPI Key</h2>
   <div class="status-badge {{ 'status-active' if api_settings.is_active else 'status-inactive' }}" id="statusBadge">
     <span class="status-dot {{ 'dot-active' if api_settings.is_active else 'dot-inactive' }}" id="statusDot"></span>
-    <span id="statusText">{{ 'ACTIVE' if api_settings.is_active else 'HAKUNA KEY / IMEISHA MUDA' }}</span>
+    <span id="statusText">{{ 'ACTIVE' if api_settings.is_active else 'HAKUNA KEY / IMEISHA' }}</span>
   </div>
-
   {% if api_settings.expires_at %}
-  <div class="expiry-info" id="expiryInfo">
-    Inaisha muda: {{ api_settings.expires_at.strftime('%Y-%m-%d %H:%M') }}
-  </div>
+  <div class="expiry-info">Inaisha: {{ api_settings.expires_at.strftime('%Y-%m-%d %H:%M') }}</div>
   {% endif %}
-
   <label>API Key</label>
   <input type="password" id="apiKeyInput" placeholder="Weka API key yako hapa">
-
   <label>Itumike kwa siku ngapi</label>
   <select id="expiryDays">
     <option value="7">Siku 7</option>
@@ -137,11 +73,41 @@
     <option value="90">Siku 90</option>
     <option value="365">Mwaka 1</option>
   </select>
-
   <button class="btn-save" onclick="saveApiKey()">Hifadhi API Key</button>
   <button class="btn-clear" onclick="clearApiKey()">Futa API Key</button>
 </div>
 
+<!-- ADMIN CONTROLS -->
+<div class="card">
+  <h2>⚙️ Admin Controls</h2>
+
+  <label>EV Alert Threshold (sasa: <span id="currentEV">{{ admin.ev_threshold }}</span>)</label>
+  <div class="admin-row">
+    <div><input type="number" id="evInput" step="0.01" min="0.01" max="0.20"
+          placeholder="{{ admin.ev_threshold }}" value="{{ admin.ev_threshold }}"></div>
+  </div>
+  <div class="current-val">Kiwango cha chini cha edge kabla ya alert (0.03 = 3%)</div>
+
+  <label>Starting Bankroll (sasa: $<span id="currentBankroll">{{ admin.bankroll }}</span>)</label>
+  <input type="number" id="bankrollInput" step="1000" min="1000"
+         value="{{ admin.bankroll }}">
+
+  <label>Poll Interval (sasa: <span id="currentPoll">{{ admin.poll_interval }}</span>s)</label>
+  <input type="number" id="pollInput" step="5" min="10" max="120"
+         value="{{ admin.poll_interval }}">
+  <div class="current-val">Sekunde kati ya kila scan ya API (10-120s)</div>
+
+  <button class="btn-admin" onclick="saveAdminSettings()">💾 Hifadhi Mabadiliko</button>
+</div>
+
+<!-- DANGER ZONE -->
+<div class="card">
+  <h2>🗑️ Danger Zone</h2>
+  <label>Futa historia yote na uanzie upya</label>
+  <button class="btn-clear" onclick="fullReset()">⚠️ Full Reset (futa data yote)</button>
+</div>
+
+<!-- USERS -->
 <div class="card">
   <h2>👥 Watumiaji Waliotembelea</h2>
   <div id="usersList">
@@ -149,7 +115,7 @@
       {% for u in users %}
       <div class="user-row">
         <div class="username">{{ u.username }}</div>
-        <div class="times">Mara ya mwisho: {{ u.last_seen.strftime('%Y-%m-%d %H:%M') }}</div>
+        <div class="times">{{ u.last_seen.strftime('%Y-%m-%d %H:%M') }}</div>
       </div>
       {% endfor %}
     {% else %}
@@ -165,43 +131,64 @@
 </nav>
 
 <script>
-function showToast(message, isError = false) {
-  const toast = document.getElementById('toast');
-  toast.textContent = message;
-  toast.className = 'toast' + (isError ? ' error' : '');
-  toast.style.display = 'block';
-  setTimeout(() => { toast.style.display = 'none'; }, 3000);
+function showToast(msg, isError=false) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast' + (isError ? ' error' : '');
+  t.style.display = 'block';
+  setTimeout(() => { t.style.display = 'none'; }, 3000);
 }
 
 async function saveApiKey() {
-  const apiKey = document.getElementById('apiKeyInput').value.trim();
-  const expiryDays = document.getElementById('expiryDays').value;
+  const key = document.getElementById('apiKeyInput').value.trim();
+  const days = document.getElementById('expiryDays').value;
+  if (!key) { showToast('Weka API key kwanza!', true); return; }
+  const res = await fetch('/api/settings/update_api_key', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({api_key: key, expires_in_days: parseInt(days)})
+  });
+  if (res.ok) { showToast('API key imehifadhiwa!'); setTimeout(() => location.reload(), 1000); }
+  else showToast('Imeshindikana', true);
+}
 
-  if (!apiKey) {
-    showToast('Weka API key kwanza!', true);
-    return;
+async function clearApiKey() {
+  if (!confirm('Una uhakika?')) return;
+  const res = await fetch('/api/settings/clear_api_key', {method:'POST'});
+  if (res.ok) { showToast('API key imefutwa'); setTimeout(() => location.reload(), 1000); }
+}
+
+async function saveAdminSettings() {
+  const ev = parseFloat(document.getElementById('evInput').value);
+  const bankroll = parseFloat(document.getElementById('bankrollInput').value);
+  const poll = parseInt(document.getElementById('pollInput').value);
+
+  if (isNaN(ev) || isNaN(bankroll) || isNaN(poll)) {
+    showToast('Weka thamani sahihi', true); return;
   }
 
-  const res = await fetch('/api/settings/update_api_key', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ api_key: apiKey, expires_in_days: parseInt(expiryDays) })
+  const res = await fetch('/api/settings/update_admin', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ev_threshold: ev, bankroll, poll_interval: poll})
   });
 
   if (res.ok) {
-    showToast('API key imehifadhiwa!');
-    setTimeout(() => location.reload(), 1000);
+    const data = await res.json();
+    document.getElementById('currentEV').textContent = data.ev_threshold;
+    document.getElementById('currentBankroll').textContent = data.bankroll;
+    document.getElementById('currentPoll').textContent = data.poll_interval;
+    showToast('Mabadiliko yamehifadhiwa! App itaanzisha upya...');
   } else {
     showToast('Imeshindikana kuhifadhi', true);
   }
 }
 
-async function clearApiKey() {
-  if (!confirm('Una uhakika unataka kufuta API key?')) return;
-  const res = await fetch('/api/settings/clear_api_key', { method: 'POST' });
+async function fullReset() {
+  if (!confirm('Una uhakika kabisa? Data yote ya history itafutwa!')) return;
+  const res = await fetch('/api/full_reset', {method:'POST'});
   if (res.ok) {
-    showToast('API key imefutwa');
-    setTimeout(() => location.reload(), 1000);
-  }
+    showToast('Reset imefanikiwa!');
+    setTimeout(() => window.location.href = '/', 1500);
+  } else showToast('Reset imeshindikana', true);
 }
 
 async function refreshStatus() {
@@ -210,7 +197,6 @@ async function refreshStatus() {
   const badge = document.getElementById('statusBadge');
   const dot = document.getElementById('statusDot');
   const text = document.getElementById('statusText');
-
   if (data.is_active) {
     badge.className = 'status-badge status-active';
     dot.className = 'status-dot dot-active';
@@ -225,6 +211,5 @@ async function refreshStatus() {
 refreshStatus();
 setInterval(refreshStatus, 30000);
 </script>
-
 </body>
 </html>
